@@ -8,6 +8,7 @@ Type=simple
 User=lidoll-gallery
 Group=lidoll-gallery
 # Match the installer's test/setup working directory so the service never needs access to the source checkout's parent directories.
+# update.sh swaps only this application directory; it preserves the installed unit, environment, and StateDirectory.
 WorkingDirectory=/opt/lidoll-gallery
 EnvironmentFile=/etc/lidoll-gallery.env
 # The installer accepts this existing runtime at 24.9+; changing the default node command has no effect here.

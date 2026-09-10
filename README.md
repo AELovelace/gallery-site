@@ -35,6 +35,19 @@ and prepares `/opt/lidoll-gallery/server/gallery/nginx-gallery.conf` with the
 matching upstream. Copy that installed snippet to the proxy; later installs
 reuse the saved port. See [changing the port](FEDORA.md#changing-the-gallery-port).
 
+For later updates from a clean Git checkout with a tracking branch:
+
+```sh
+sudo bash server/gallery/fedora/update.sh
+```
+
+This pulls with `git pull --ff-only --no-rebase` as the checkout owner, tests
+staged code, refreshes `/opt/lidoll-gallery`, and restarts the existing service.
+Your port, upload limit, credentials, uploads, Node runtime, installed unit and
+firewall settings are preserved. The previous app is retained for recovery.
+See [updates](FEDORA.md#updates-backups-and-password-resets) for requirements
+and failure recovery.
+
 ## Repository and runtime
 
 This repository is separate from the GameMaker project. It includes its own theme
@@ -144,6 +157,7 @@ errors appear in the service log; deleted records immediately become inaccessibl
 node --test server/gallery/gallery.test.mjs
 npm install
 npm run test:browser
+python3 python/test_fedora_update.py
 python3 python/package_release.py
 ```
 
@@ -156,8 +170,13 @@ image, MP4 and WebM fixtures, check still-frame previews and video covers/poster
 and save screenshots in ignored `output/gallery/`.
 
 The release command creates `dist/lidoll-gallery-fedora.tar.gz` plus a SHA-256
-file. It packages an explicit list of production files, with Linux line endings,
+file. The installer, Git updater, and packager share the explicit production
+allowlist in `server/gallery/runtime-files.txt`. Add new runtime assets there.
+The updater tests use temporary local Git remotes and mocked host services to
+check clean pulls, settings preservation, failed tests, and application recovery.
+The release packages production files with Linux line endings,
 and excludes Git history, credentials, uploaded content, the game, and npm modules.
-Check installer syntax with `bash -n server/gallery/fedora/install.sh` before
-packaging deployment changes. Real Fedora/SELinux/nginx validation is performed
+Check both deployment scripts with `bash -n server/gallery/fedora/install.sh`
+and `bash -n server/gallery/fedora/update.sh` before packaging deployment changes.
+Real Fedora/SELinux/nginx validation is performed
 on the target hosts as described in [FEDORA.md](FEDORA.md).

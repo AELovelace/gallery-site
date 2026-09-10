@@ -237,6 +237,46 @@ reachable from `10.1.1.20`.
 
 ## Updates, backups and password resets
 
+For routine code updates, use the Git checkout on the backend:
+
+```sh
+cd /home/aedith/gallery-site
+sudo bash server/gallery/fedora/update.sh
+```
+
+The checkout must be clean, on a branch with a configured upstream, and owned
+by the account that can pull from the remote. Git runs as that owner when the
+updater is launched with sudo, so existing Git credentials and file ownership
+are used. Local changes, untracked files, detached HEADs, and diverged history
+stop the update; the script does not stash, reset, merge, or discard work.
+Ignored local files are excluded from deployment. An extracted release tarball
+has no Git history, so continue using `install.sh` for tarball-based updates.
+
+The updater uses `git pull --ff-only --no-rebase`, exports the pulled commit's
+explicit `server/gallery/runtime-files.txt` allowlist into a staging directory
+under `/opt`, and runs API tests there as `lidoll-gallery` while the current
+service keeps running. Only after checks pass does it stop the gallery, swap
+application directories, restart, and check the saved host/port for gallery
+JSON. It shares a deployment lock with the installer. The pulled commit is
+recorded in `/opt/lidoll-gallery/.deployment-revision`.
+
+The updater preserves `/etc/lidoll-gallery.env`, `/var/lib/lidoll-gallery`, the
+installed systemd unit/drop-ins, Node, and firewall configuration. It does not
+install packages or run owner setup. Your selected port (such as 8788) and
+upload limit (such as 1024 MiB) remain in use. The staged nginx snippet reflects
+those values, but the proxy host is not changed. If a release requires a new
+unit or dependency, use the installer for that planned deployment instead.
+
+Back up production data before updates; see [README.md](README.md). Previous
+application files are retained in the printed `/opt/.lidoll-gallery-update.*/previous`
+directory after a successful update. On activation failure, the updater stops
+the failed service, restores the previous application directory and attempts
+to start it again. The checkout remains at the pulled commit. It does not undo
+database migrations performed by new code or restore a data backup. Inspect
+`journalctl -u lidoll-gallery` if recovery cannot start the old app. Staging and
+recovery directories are retained for inspection and can be removed manually
+after verifying the update; they contain application files, not a data backup.
+
 Video previews require the updated `web/gallery/index.html`, `app.js`,
 `video-previews.js`, and `style.css` together. The installer and release archive
 include them. Existing videos gain previews automatically after the page is
@@ -246,11 +286,12 @@ the existing media byte-range endpoint and its own supported codecs. Large
 videos may need several range requests before a preview appears; preview
 decoders time out after 20 seconds and leave the play overlay as a fallback.
 
-Install a new release using the same installer from a separate extracted folder
-or checkout. It restarts the app and preserves `/var/lib/lidoll-gallery` and the
+For release archives or installation/configuration changes, use the installer
+from a separate extracted folder or checkout. It restarts the app and preserves `/var/lib/lidoll-gallery` and the
 environment file. Back up existing production data first; see [README.md](README.md).
-If validation fails after the old service stops, inspect the error/log, fix it,
-and rerun the installer. It does not automatically roll back app source.
+If the installer fails after the old service stops, inspect the error/log, fix
+it, and rerun the installer. Unlike the Git updater, the installer does not
+automatically roll back app source.
 
 The views/likes update automatically creates additional SQLite tables at startup;
 it does not replace existing sets, uploads, owner credentials or sessions. Old

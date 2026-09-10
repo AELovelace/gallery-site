@@ -1,0 +1,16 @@
+README.md
+FEDORA.md
+package.json
+server/gallery/runtime-files.txt
+server/gallery/server.mjs
+server/gallery/setup.mjs
+server/gallery/gallery.test.mjs
+server/gallery/gallery.env.example
+server/gallery/lidoll-gallery.service
+server/gallery/nginx-gallery.conf
+web/gallery/index.html
+web/gallery/app.js
+web/gallery/preferences.js
+web/gallery/video-previews.js
+web/gallery/style.css
+web/gallery/theme.css

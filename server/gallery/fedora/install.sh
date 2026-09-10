@@ -45,6 +45,9 @@ done # Parses independent zone and port options without treating arguments as sh
 [[ -z $gallery_upload_mb ]] || (( gallery_upload_mb <= 2048 )) || die '--max-upload-mb must be between 1 and 2048.'
 [[ $EUID -eq 0 ]] || die 'Run this installer with sudo.'
 [[ -f /etc/fedora-release && ! -e /run/ostree-booted ]] || die 'This installer requires conventional Fedora Server/Workstation with dnf, not an Atomic image.'
+command -v flock >/dev/null || die 'Install util-linux first so gallery deployments can be locked.'
+exec 9>/run/lock/lidoll-gallery-deploy.lock
+flock -n 9 || die 'Another gallery deployment is running.'
 gallery_source=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)
 gallery_app=/opt/lidoll-gallery
 gallery_data=/var/lib/lidoll-gallery
@@ -69,16 +72,9 @@ if [[ -z $gallery_upload_mb && ! -f /etc/lidoll-gallery.env ]]; then gallery_upl
 [[ $gallery_upload_mb =~ ^[1-9][0-9]{0,3}$ ]] && (( gallery_upload_mb <= 2048 )) || die 'Saved GALLERY_MAX_UPLOAD_MB must be an integer from 1 to 2048; use --max-upload-mb to replace it.'
 
 # Uses an explicit file list so uploads, credentials, Git history, and the game are never installed as website files.
-gallery_files=(
-  README.md FEDORA.md package.json
-  server/gallery/server.mjs server/gallery/setup.mjs server/gallery/gallery.test.mjs
-  server/gallery/gallery.env.example server/gallery/lidoll-gallery.service
-  server/gallery/nginx-gallery.conf
-  web/gallery/index.html web/gallery/app.js web/gallery/preferences.js
-  web/gallery/video-previews.js
-  web/gallery/style.css web/gallery/theme.css
-)
+mapfile -t gallery_files < "$gallery_source/server/gallery/runtime-files.txt" # Shares the production file list with the updater and release packager.
 for gallery_file in "${gallery_files[@]}"; do
+  [[ $gallery_file =~ ^[a-zA-Z0-9_./-]+$ && $gallery_file != /* && $gallery_file != *..* ]] || die "Invalid runtime path: $gallery_file"
   [[ -f $gallery_source/$gallery_file && ! -L $gallery_source/$gallery_file ]] || die "Missing or symlinked release file: $gallery_file"
 done
 

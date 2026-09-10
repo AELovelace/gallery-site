@@ -8,13 +8,8 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_FILES = (
-    "README.md", "FEDORA.md", "package.json",
-    "server/gallery/server.mjs", "server/gallery/setup.mjs",
-    "server/gallery/gallery.test.mjs", "server/gallery/gallery.env.example",
-    "server/gallery/lidoll-gallery.service", "server/gallery/nginx-gallery.conf",
-    "server/gallery/fedora/install.sh",
-    "web/gallery/index.html", "web/gallery/app.js", "web/gallery/preferences.js", "web/gallery/video-previews.js",
-    "web/gallery/style.css", "web/gallery/theme.css",
+    *(ROOT / "server/gallery/runtime-files.txt").read_text(encoding="utf-8").splitlines(),
+    "server/gallery/fedora/install.sh", "server/gallery/fedora/update.sh",
 )
 
 
@@ -24,6 +19,8 @@ def build_release() -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(destination, "w:gz") as archive:
         for relative in RELEASE_FILES:
+            if not relative or Path(relative).is_absolute() or ".." in relative or "\\" in relative:
+                raise ValueError(f"Invalid release path: {relative}")
             source = ROOT / relative
             if source.is_symlink() or not source.is_file():
                 raise ValueError(f"Missing or symlinked release source: {relative}")
