@@ -13,6 +13,7 @@ const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 async function fixture(t, options = {}) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "lidoll-gallery-test-"));
   await writeFile(path.join(dataDir, "admin.json"), JSON.stringify(await passwordRecord("doll", "test-password-for-gallery")));
+  if (options.prepare) await options.prepare(dataDir); // Allows an actual pre-update database to be opened by the new server in migration coverage.
   let server;
   let base;
   async function start() {
@@ -35,12 +36,16 @@ async function fixture(t, options = {}) {
     await rm(resolved, { recursive: true, force: true }); // Removes only the uniquely allocated test data directory after closing SQLite.
   });
   function client() {
-    let cookie = "";
+    const cookies = new Map();
     let csrf = "";
     return {
       async request(route, { method = "GET", body, headers = {}, raw = false } = {}) {
+        const cookie = [...cookies].map(([name, value]) => `${name}=${value}`).join("; ");
         const response = await fetch(`${base}${route}`, { method, headers: { ...(cookie ? { Cookie: cookie } : {}), ...(method !== "GET" ? { Origin: origin, "X-CSRF-Token": csrf } : {}), ...(body && !raw ? { "Content-Type": "application/json" } : {}), ...headers }, body: body ? (raw ? body : JSON.stringify(body)) : undefined });
-        if (response.headers.has("set-cookie")) cookie = response.headers.get("set-cookie").split(";")[0];
+        for (const header of response.headers.getSetCookie()) {
+          const [name, value] = header.split(";")[0].split("=");
+          if (value) cookies.set(name, value); else cookies.delete(name);
+        } // Models separate visitor/session cookies, including session rotation and logout.
         const bytes = Buffer.from(await response.arrayBuffer());
         let data;
         try { data = JSON.parse(bytes.toString()); } catch { data = null; }
@@ -148,5 +153,101 @@ test("login rate limits survive sessions and public routes do not expose storage
 test("HTTPS origins enable secure session cookies", async (t) => {
   const app = await fixture(t, { origin: "https://lidoll.dev" });
   const session = await app.client().request("/gallery/api/session");
-  assert.match(session.headers.get("set-cookie"), /^__Secure-ldq_gallery=.*; Secure$/);
+  assert.ok(session.headers.getSetCookie().some((value) => /^__Secure-ldq_gallery=.*; Secure$/.test(value)));
+  assert.ok(session.headers.getSetCookie().some((value) => /^__Secure-ldq_visitor=.*HttpOnly; SameSite=Strict; Max-Age=31536000; Secure$/.test(value)));
+});
+
+test("public likes are idempotent, removable and persistent; daily views deduplicate separately for sets and media", async (t) => {
+  const app = await fixture(t);
+  const owner = app.client();
+  const first = app.client();
+  const second = app.client();
+  await owner.login();
+  const set = (await owner.request("/gallery/api/sets", { method: "POST", body: { title: "Reactions" } })).data.id;
+  const item = (await owner.request(`/gallery/api/sets/${set}/items`, { method: "POST", body: png, raw: true })).data.id;
+  await first.request("/gallery/api/session");
+  await second.request("/gallery/api/session");
+  for (const route of [`sets/${set}`, `items/${item}`]) {
+    const base = `/gallery/api/${route}`;
+    assert.deepEqual((await first.request(`${base}/view`, { method: "POST" })).data, { views: 1, likes: 0, liked: false });
+    const repeats = await Promise.all(Array.from({ length: 5 }, () => first.request(`${base}/view`, { method: "POST" })));
+    assert.ok(repeats.every((result) => result.status === 200 && result.data.views === 1));
+    assert.equal((await second.request(`${base}/view`, { method: "POST" })).data.views, 2);
+    const likes = await Promise.all(Array.from({ length: 5 }, () => first.request(`${base}/like`, { method: "POST", body: { liked: true } })));
+    assert.ok(likes.every((result) => result.status === 200 && result.data.likes === 1));
+    assert.equal((await second.request(`${base}/like`, { method: "POST", body: { liked: true } })).data.likes, 2);
+    assert.deepEqual((await first.request(`${base}/like`, { method: "POST", body: { liked: false } })).data, { views: 2, likes: 1, liked: false });
+    assert.equal((await first.request(`${base}/like`, { method: "POST", body: { liked: false } })).data.likes, 1);
+  }
+  await app.restart();
+  const sets = (await second.request("/gallery/api/sets")).data.sets;
+  assert.equal(sets[0].liked, true);
+  assert.equal(sets[0].items[0].liked, true);
+  assert.equal(sets[0].views, 2);
+  assert.equal(sets[0].items[0].views, 2);
+  assert.equal((await first.request("/gallery/api/sets")).data.sets[0].liked, false);
+  assert.equal((await app.client().request("/gallery/api/sets")).data.sets[0].likes, 1);
+  assert.equal((await second.request(`/gallery/api/sets/${set}/view`, { method: "POST" })).data.views, 2);
+  await second.login();
+  await second.request("/gallery/api/logout", { method: "POST" });
+  await second.request("/gallery/api/session");
+  assert.equal((await second.request("/gallery/api/sets")).data.sets[0].liked, true);
+  const db = new DatabaseSync(path.join(app.dataDir, "gallery.sqlite"));
+  db.exec("UPDATE set_views SET day=day-1; UPDATE item_views SET day=day-1");
+  db.close();
+  assert.equal((await second.request(`/gallery/api/sets/${set}/view`, { method: "POST" })).data.views, 3);
+  assert.equal((await second.request(`/gallery/api/items/${item}/view`, { method: "POST" })).data.views, 3);
+  await owner.request(`/gallery/api/sets/${set}`, { method: "DELETE" });
+  const check = new DatabaseSync(path.join(app.dataDir, "gallery.sqlite"));
+  for (const table of ["set_views", "item_views", "set_likes", "item_likes"]) assert.equal(check.prepare(`SELECT count(*) AS total FROM ${table}`).get().total, 0);
+  check.close();
+});
+
+test("public reactions enforce session, signed identity, origin and CSRF without granting editing privileges", async (t) => {
+  const app = await fixture(t);
+  const owner = app.client();
+  const visitor = app.client();
+  await owner.login();
+  const id = (await owner.request("/gallery/api/sets", { method: "POST", body: { title: "Protected" } })).data.id;
+  const route = `/gallery/api/sets/${id}`;
+  assert.equal((await visitor.request(`${route}/view`, { method: "POST" })).status, 401);
+  const visitorSession = await visitor.request("/gallery/api/session");
+  assert.equal((await visitor.request(`${route}/like`, { method: "POST", body: { liked: true }, headers: { Origin: "https://other.example" } })).status, 403);
+  assert.equal((await visitor.request(`${route}/view`, { method: "POST", headers: { "X-CSRF-Token": "forged" } })).status, 403);
+  assert.equal((await visitor.request(`${route}/like`, { method: "POST", body: { liked: "yes" } })).status, 400);
+  assert.equal((await visitor.request(`${route}/view`, { method: "GET" })).status, 405);
+  assert.equal((await visitor.request(`${route}/like`, { method: "DELETE" })).status, 401);
+  assert.equal((await visitor.request(route, { method: "PATCH", body: { title: "Hacked" } })).status, 401);
+  assert.equal((await visitor.request(`${route}/items`, { method: "POST", raw: true, body: png })).status, 401);
+  assert.equal((await visitor.request(route, { method: "DELETE" })).status, 401);
+  const session = await visitor.request("/gallery/api/session");
+  const forged = `ldq_visitor=${"a".repeat(64)}.${"b".repeat(64)}`;
+  const validSessionCookie = visitorSession.headers.getSetCookie().find((value) => value.startsWith("ldq_gallery=")).split(";")[0];
+  assert.equal((await visitor.request(`${route}/view`, { method: "POST", headers: { Cookie: `${validSessionCookie}; ${forged}`, "X-CSRF-Token": session.data.csrf } })).status, 401);
+  await owner.request(route, { method: "DELETE" });
+  assert.equal((await visitor.request(`${route}/like`, { method: "POST", body: { liked: true } })).status, 404);
+});
+
+test("existing collections and media survive automatic reaction-table creation", async (t) => {
+  const id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const app = await fixture(t, { prepare: async (dataDir) => {
+    const legacy = new DatabaseSync(path.join(dataDir, "gallery.sqlite"));
+    legacy.exec(`CREATE TABLE sets (id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL, cover_id TEXT, created INTEGER NOT NULL);
+      CREATE TABLE items (id TEXT PRIMARY KEY, set_id TEXT NOT NULL REFERENCES sets(id) ON DELETE CASCADE, filename TEXT NOT NULL, kind TEXT NOT NULL, caption TEXT NOT NULL, created INTEGER NOT NULL);`);
+    legacy.prepare("INSERT INTO sets VALUES (?, 'Existing collection', 'Keep this description', ?, 1)").run(id, id);
+    legacy.prepare("INSERT INTO items VALUES (?, ?, 'existing.png', 'image', 'Existing caption', 1)").run(id, id);
+    legacy.close();
+  } });
+  const visitor = app.client();
+  await visitor.request("/gallery/api/session");
+  const set = (await visitor.request("/gallery/api/sets")).data.sets[0];
+  assert.equal(set.title, "Existing collection");
+  assert.equal(set.cover_id, id);
+  assert.equal(set.items[0].caption, "Existing caption");
+  assert.equal(set.likes, 0);
+  assert.equal(set.views, 0);
+  assert.equal(set.items[0].views, 0);
+  assert.equal((await visitor.request(`/gallery/api/items/${id}/like`, { method: "POST", body: { liked: true } })).data.likes, 1);
+  await app.restart();
+  assert.equal((await visitor.request("/gallery/api/sets")).data.sets[0].items[0].likes, 1);
 });

@@ -57,9 +57,33 @@ upload versions suitable for public sharing. File-signature checks exclude
 HTML/SVG and unrecognized formats but do not fully decode or repair media.
 The gallery does not generate resized photo thumbnails or provide private drafts.
 
+## Views and likes
+
+Collections and individual photos/videos show public view and like totals.
+Opening a collection or its media viewer records one view per browser per UTC
+day. Browsing thumbnails, reloading the collection list, or seeking a video does
+not add views. Views count opens, including the owner's, rather than completed
+video plays or unique people. Collections and their media have separate totals.
+
+Visitors can like without an owner account. Each browser can have one like per
+collection or file; clicking again removes that like. Likes persist across page
+reloads, owner login/logout, and server restarts. A signed, HttpOnly first-party
+visitor cookie lasts one year and identifies the browser; no fingerprint or IP
+address is stored in reaction records. Clearing cookies, using another browser,
+or cookie expiry creates a new identity, so these are lightweight community
+counts, not fraud-proof analytics. Browsers blocking cookies can still browse,
+but cannot save reactions. An expired session asks the visitor to refresh.
+
+Counts and deduplication records are stored in SQLite, covered by its existing
+backup, and removed when their collection/file is deleted. Existing installations
+gain the new tables automatically at startup, with existing content starting at
+zero. Owner-password resets do not reset reactions or visitor identities.
+
 ## Authentication and persistence
 
-Mutations require an authenticated server session, exact origin and CSRF checks.
+Content edits require an owner-authenticated session, exact origin and CSRF checks.
+Public view/like writes require an anonymous session, a signed visitor cookie,
+and the same origin/CSRF checks, without granting content-management permissions.
 Production cookies are Secure, HttpOnly, and SameSite=Strict. Passwords use salted
 scrypt hashes. Sessions last 12 hours and rotate at login; logout and password
 reset revoke sessions. Login attempts are limited to 10 per 15 minutes per direct
@@ -87,7 +111,8 @@ python3 python/package_release.py
 
 The API tests use temporary databases and verify CRUD/persistence, authentication,
 CSRF/origin checks, sessions, rate limits, upload validation, private-file
-isolation and video byte ranges. Puppeteer is a development dependency used only
+isolation, video byte ranges, per-day view deduplication, idempotent likes/unlikes,
+visitor persistence, and reaction cleanup. Puppeteer is a development dependency used only
 for the browser checks; it downloads Chromium. Browser tests create their own
 image/video fixtures and save screenshots in ignored `output/gallery/`.
 

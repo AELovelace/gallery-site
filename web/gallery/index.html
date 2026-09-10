@@ -51,6 +51,7 @@
     <section id="set-detail" class="rail-panel" aria-labelledby="set-title" hidden>
       <div class="section-bar"><button class="action" id="back-to-sets" type="button">← All collections</button><div id="set-actions" hidden><button class="action" id="edit-set" type="button">Edit set</button> <button class="action danger" id="delete-set" type="button">Delete set</button></div></div>
       <p class="eyebrow" id="set-meta"></p><h2 id="set-title" tabindex="-1"></h2><p id="set-description" class="preserve-lines"></p>
+      <div id="set-engagement"></div>
       <form id="upload-form" class="upload-panel" hidden>
         <label>Add photos &amp; videos<input id="upload-files" type="file" accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm" multiple required></label>
         <p class="field-hint" id="upload-hint">JPG, PNG, GIF, WebP, MP4 or WebM. Choose several files to upload a set.</p>
@@ -93,6 +94,7 @@
   <dialog id="viewer" class="viewer" aria-label="Media viewer">
     <div class="viewer-toolbar"><p id="viewer-counter"></p><button class="action" type="button" data-close>Close ✕</button></div>
     <div id="viewer-media"></div><p id="viewer-caption" class="preserve-lines"></p>
+    <div id="viewer-engagement"></div>
     <div class="viewer-navigation"><button class="action" id="previous-media" type="button">← Previous</button><button class="action" id="next-media" type="button">Next →</button></div>
   </dialog>
   <noscript><p class="rail-panel">Please enable JavaScript to browse the gallery and manage uploads.</p></noscript>

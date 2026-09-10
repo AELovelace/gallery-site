@@ -115,13 +115,37 @@ try {
   await page.reload();
   await page.waitForSelector(".collection-card");
   assert.equal(await page.$eval("#manager", (node) => node.hidden), true);
+  await page.click(".collection-card .like-button");
+  await page.waitForSelector('.collection-card .like-button[aria-pressed="true"]:not(:disabled)');
+  assert.equal(await page.$eval("#set-detail", (node) => node.hidden), true); // Liking a collection must not also open its separate navigation button.
+  await page.reload();
+  await page.waitForSelector('.collection-card .like-button[aria-pressed="true"]');
+  await page.click(".collection-open");
+  await page.waitForFunction(() => document.querySelector("#set-engagement .view-count").textContent === "1 view");
+  assert.equal(await page.$eval("#set-engagement .like-button", (node) => node.getAttribute("aria-pressed")), "true");
+  await page.click("#set-engagement .like-button");
+  await page.waitForSelector('#set-engagement .like-button[aria-pressed="false"]:not(:disabled)');
+  await page.click(".media-card:nth-child(2) .media-open");
+  await page.waitForFunction(() => document.querySelector("#viewer-media video")?.readyState >= 1);
+  await page.$eval("#viewer-media video", (video) => { window.galleryTestVideo = video; video.loop = true; return video.play(); });
+  await page.waitForSelector("#viewer-engagement .like-button:not(:disabled)");
+  await page.click("#viewer-engagement .like-button");
+  await page.waitForSelector('#viewer-engagement .like-button[aria-pressed="true"]:not(:disabled)');
+  assert.equal(await page.$eval("#viewer-media video", (video) => video === window.galleryTestVideo && !video.paused), true);
+  await page.keyboard.press("Escape");
+  assert.equal(await page.$eval(".media-card:nth-child(2) .like-button", (node) => node.getAttribute("aria-pressed")), "true");
+  await page.click("#back-to-sets");
+  await page.click(".collection-open");
+  await page.waitForSelector("#set-engagement .like-button:not(:disabled)");
+  assert.equal(await page.$eval("#set-engagement .view-count", (node) => node.textContent), "1 view");
+  await page.click("#back-to-sets");
   const outputDir = path.join(root, "output", "gallery");
   await mkdir(outputDir, { recursive: true });
   await page.screenshot({ path: path.join(outputDir, "desktop-test.png"), fullPage: true });
   await page.setViewport({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: path.join(outputDir, "mobile-test.png"), fullPage: true });
-  await page.click(".collection-card");
+  await page.click(".collection-open");
   await page.click(".media-open");
   assert.equal(await page.evaluate(() => document.querySelector("#viewer").getBoundingClientRect().width <= innerWidth), true);
   await page.keyboard.press("Escape");
@@ -129,7 +153,7 @@ try {
   assert.equal(new URL(page.url()).pathname, "/gallery/");
   assert.equal(await page.$eval('.gallery-header nav a[href="../"]', (node) => node.textContent), "Back to game");
   assert.deepEqual(errors, []);
-  console.log("Browser checks passed: login, collections, real image/video upload and playback, partial retry, captions, editing, search, logout, mobile layout, root redirect.");
+  console.log("Browser checks passed: login, uploads, playback, partial retry, captions, editing, search, logout, public likes, persistent reactions, deduplicated views, mobile layout, root redirect.");
 } catch (error) {
   console.error("Browser verification failed:", error);
   process.exitCode = 1;

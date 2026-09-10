@@ -153,7 +153,10 @@ Open `https://lidoll.dev/gallery/`. Log in and create a test collection, upload
 photos and a video, then check playback/seeking, captions and cover selection.
 Verify a signed-out window sees saved content and does not show editing controls.
 Try a larger video through nginx to validate the real proxy limits. Test the
-main index link, mobile layout, and logout.
+main index link, mobile layout, and logout. Like a collection and a media item
+while signed out, refresh to confirm the likes persist, then remove a like.
+Open the same collection/media repeatedly: its view count should increase only
+once for that browser per UTC day. Check that video playback continues when liked.
 
 The local API/browser checks do not prove the Fedora firewall, SELinux policy,
 or existing nginx configuration works; these target-host checks complete that
@@ -167,6 +170,12 @@ or checkout. It restarts the app and preserves `/var/lib/lidoll-gallery` and the
 environment file. Back up existing production data first; see [README.md](README.md).
 If validation fails after the old service stops, inspect the error/log, fix it,
 and rerun the installer. It does not automatically roll back app source.
+
+The views/likes update automatically creates additional SQLite tables at startup;
+it does not replace existing sets, uploads, owner credentials or sessions. Old
+content starts with zero counts. Backups of the data directory include the new
+counts and visitor-signing secret. No new nginx, firewall, or environment setting
+is needed. Deploy frontend and backend files from the same release together.
 
 Reset the owner password locally on the gallery box:
 

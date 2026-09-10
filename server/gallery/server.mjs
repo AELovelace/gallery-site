@@ -1,7 +1,7 @@
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomBytes, randomUUID, createHash, scrypt, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, createHash, createHmac, scrypt, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import { mkdirSync, readFileSync, createReadStream, existsSync, realpathSync } from "node:fs";
 import { open, rename, unlink, stat } from "node:fs/promises";
@@ -73,11 +73,47 @@ export function createGalleryServer(options = {}) {
     CREATE INDEX IF NOT EXISTS items_set ON items(set_id);
     CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, csrf TEXT NOT NULL, authenticated INTEGER NOT NULL, expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS attempts (address TEXT NOT NULL, created INTEGER NOT NULL);
-    CREATE INDEX IF NOT EXISTS attempt_time ON attempts(created);`);
+    CREATE INDEX IF NOT EXISTS attempt_time ON attempts(created);
+    CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS set_views (target TEXT REFERENCES sets(id) ON DELETE CASCADE, visitor TEXT NOT NULL, day INTEGER NOT NULL, PRIMARY KEY(target, visitor, day));
+    CREATE TABLE IF NOT EXISTS item_views (target TEXT REFERENCES items(id) ON DELETE CASCADE, visitor TEXT NOT NULL, day INTEGER NOT NULL, PRIMARY KEY(target, visitor, day));
+    CREATE TABLE IF NOT EXISTS set_likes (target TEXT REFERENCES sets(id) ON DELETE CASCADE, visitor TEXT NOT NULL, PRIMARY KEY(target, visitor));
+    CREATE TABLE IF NOT EXISTS item_likes (target TEXT REFERENCES items(id) ON DELETE CASCADE, visitor TEXT NOT NULL, PRIMARY KEY(target, visitor));`);
   const query = (sql, ...args) => db.prepare(sql).all(...args);
   const one = (sql, ...args) => db.prepare(sql).get(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args);
   const cookieName = secure ? "__Secure-ldq_gallery" : "ldq_gallery";
+  const visitorCookieName = secure ? "__Secure-ldq_visitor" : "ldq_visitor";
+  run("INSERT OR IGNORE INTO settings VALUES ('visitor_secret', ?)", token());
+  const visitorSecret = one("SELECT value FROM settings WHERE key='visitor_secret'").value; // Persists browser identity signatures through restarts and owner-password changes.
+  const signVisitor = (value) => createHmac("sha256", visitorSecret).update(value).digest("hex");
+
+  function appendCookie(response, cookie) {
+    const existing = response.getHeader("Set-Cookie") || [];
+    response.setHeader("Set-Cookie", [...(Array.isArray(existing) ? existing : [existing]), cookie]); // Allows anonymous identity and login-session cookies to be issued together.
+  }
+
+  function visitorFor(request) {
+    const value = request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${visitorCookieName}=`))?.slice(visitorCookieName.length + 1);
+    if (!value || !/^[a-f0-9]{64}\.[a-f0-9]{64}$/.test(value)) return null;
+    const [identity, signature] = value.split(".");
+    if (!timingSafeEqual(Buffer.from(signature, "hex"), Buffer.from(signVisitor(identity), "hex"))) return null;
+    return digest(identity); // Stores only a random browser-identifier hash with reactions, never an IP or fingerprint.
+  }
+
+  function newVisitor(response) {
+    const identity = token();
+    appendCookie(response, `${visitorCookieName}=${identity}.${signVisitor(identity)}; Path=/gallery/; HttpOnly; SameSite=Strict; Max-Age=31536000${secure ? "; Secure" : ""}`);
+  }
+
+  function engagement(kind, id, visitor) {
+    // Table names come exclusively from the fixed route enum; target and visitor values stay parameterized.
+    return {
+      views: one(`SELECT count(*) AS total FROM ${kind}_views WHERE target=?`, id).total,
+      likes: one(`SELECT count(*) AS total FROM ${kind}_likes WHERE target=?`, id).total,
+      liked: Boolean(visitor && one(`SELECT 1 FROM ${kind}_likes WHERE target=? AND visitor=?`, id, visitor)),
+    };
+  }
 
   function sessionFor(request) {
     const value = request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
@@ -92,7 +128,7 @@ export function createGalleryServer(options = {}) {
     run("DELETE FROM sessions WHERE expires<=?", Date.now());
     if (one("SELECT count(*) AS total FROM sessions").total > 10000) fail(503, "The gallery is busy. Please try again later.");
     run("INSERT INTO sessions VALUES (?, ?, ?, ?)", digest(value), csrf, authenticated ? 1 : 0, Date.now() + lifetime * 1000);
-    response.setHeader("Set-Cookie", `${cookieName}=${value}; Path=/gallery/; HttpOnly; SameSite=Strict; Max-Age=${lifetime}${secure ? "; Secure" : ""}`);
+    appendCookie(response, `${cookieName}=${value}; Path=/gallery/; HttpOnly; SameSite=Strict; Max-Age=${lifetime}${secure ? "; Secure" : ""}`);
     return { csrf, authenticated: Boolean(authenticated) }; // Gives the browser a CSRF token while the session cookie remains inaccessible to scripts.
   }
 
@@ -162,17 +198,37 @@ export function createGalleryServer(options = {}) {
 
       const route = pathname.slice("/gallery/api/".length);
       const session = sessionFor(request);
+      const visitor = visitorFor(request);
       if (method === "GET" && route === "session") {
+        if (!visitor) newVisitor(response);
         const current = session ? { authenticated: Boolean(session.authenticated), csrf: session.csrf } : newSession(response, false);
         json(response, 200, { ...current, max_upload_mb: maxUploadMB }); return;
       }
       if (method === "GET" && route === "sets") {
         const items = query("SELECT id, set_id, kind, caption FROM items ORDER BY created, rowid");
-        const sets = query("SELECT * FROM sets ORDER BY created DESC, rowid DESC").map((set) => ({ ...set, items: items.filter((item) => item.set_id === set.id).map((item) => ({ ...item, url: `/gallery/media/${item.id}` })) }));
+        const sets = query("SELECT * FROM sets ORDER BY created DESC, rowid DESC").map((set) => ({ ...set, ...engagement("set", set.id, visitor), items: items.filter((item) => item.set_id === set.id).map((item) => ({ ...item, ...engagement("item", item.id, visitor), url: `/gallery/media/${item.id}` })) }));
         json(response, 200, { sets }); return;
       }
       if (!["POST", "PATCH", "DELETE"].includes(method)) fail(405, "Method not allowed.");
       if (request.headers.origin !== origin || request.headers["sec-fetch-site"] === "cross-site") fail(403, "This action must come from the gallery website.");
+      const reaction = /^(sets|items)\/([a-f0-9-]{36})\/(view|like)$/.exec(route);
+      if (reaction && method === "POST") {
+        if (!session || !visitor) fail(401, "Refresh the gallery to enable views and likes.");
+        if (request.headers["x-csrf-token"] !== session.csrf) fail(403, "Your session changed. Refresh the page and try again.");
+        const [, collection, id, action] = reaction;
+        const kind = collection === "sets" ? "set" : "item";
+        if (!one(`SELECT id FROM ${collection} WHERE id=?`, id)) fail(404, "This collection or file no longer exists.");
+        if (action === "view") {
+          run(`INSERT OR IGNORE INTO ${kind}_views VALUES (?, ?, ?)`, id, visitor, Math.floor(Date.now() / 86400000)); // Deduplicates opens per browser per UTC day, including concurrent requests.
+        } else {
+          const data = await readJson(request);
+          if (typeof data.liked !== "boolean") fail(400, "Provide a true or false liked value.");
+          if (!one(`SELECT id FROM ${collection} WHERE id=?`, id)) fail(404, "This collection or file no longer exists.");
+          if (data.liked) run(`INSERT OR IGNORE INTO ${kind}_likes VALUES (?, ?)`, id, visitor);
+          else run(`DELETE FROM ${kind}_likes WHERE target=? AND visitor=?`, id, visitor);
+        }
+        json(response, 200, engagement(kind, id, visitor)); return;
+      }
       if (route !== "login" && !session?.authenticated) fail(401, "Please log in to manage the gallery.");
       if (!session || request.headers["x-csrf-token"] !== session.csrf) fail(403, "Your session changed. Refresh the page and try again.");
 

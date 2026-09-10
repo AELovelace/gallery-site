@@ -3,6 +3,63 @@
 const $ = (selector) => document.querySelector(selector); // Keeps DOM lookups readable throughout the gallery.
 const state = { sets: [], active: null, admin: false, csrf: "", viewerIndex: 0, editing: null, captionId: null, uploading: false };
 const apiRoot = new URL("api/", location.href); // Keeps requests beside the gallery even when the site lives in a subdirectory.
+const engagementRequests = new Map(); // Serializes each target's view/like requests so slower responses cannot undo newer feedback.
+
+function engagementTarget(kind, id) {
+  return kind === "sets" ? state.sets.find((set) => set.id === id) : state.sets.flatMap((set) => set.items).find((item) => item.id === id);
+}
+
+function syncEngagement(kind, id, values = null) {
+  const target = engagementTarget(kind, id);
+  if (!target) return;
+  if (values) Object.assign(target, values);
+  document.querySelectorAll(`[data-engagement="${kind}:${id}"]`).forEach((bar) => {
+    bar.querySelector(".view-count").textContent = `${(target.views || 0).toLocaleString()} view${target.views === 1 ? "" : "s"}`;
+    const button = bar.querySelector(".like-button");
+    button.textContent = `${target.liked ? "♥ Liked" : "♡ Like"} · ${(target.likes || 0).toLocaleString()}`;
+    button.setAttribute("aria-pressed", String(Boolean(target.liked)));
+    button.setAttribute("aria-label", `${target.liked ? "Unlike" : "Like"} ${kind === "sets" ? "collection" : "media"}, ${target.likes || 0} likes`);
+    button.disabled = engagementRequests.has(`${kind}:${id}`);
+  }); // Updates counts in place without reloading images, interrupting video, or moving keyboard focus.
+}
+
+function sendEngagement(kind, id, action, body) {
+  const key = `${kind}:${id}`;
+  const previous = engagementRequests.get(key) || Promise.resolve();
+  const pending = previous.catch(() => {}).then(async () => {
+    const values = await api(`${kind}/${id}/${action}`, { method: "POST", ...(body ? { body: JSON.stringify(body) } : {}) });
+    syncEngagement(kind, id, values);
+  });
+  engagementRequests.set(key, pending);
+  syncEngagement(kind, id);
+  pending.catch((error) => {
+    document.querySelectorAll(`[data-engagement="${key}"] .engagement-feedback`).forEach((node) => { node.textContent = error.message; });
+  }).finally(() => {
+    if (engagementRequests.get(key) === pending) engagementRequests.delete(key);
+    syncEngagement(kind, id);
+  }); // A failed request leaves the previous confirmed count intact and offers an inline explanation.
+}
+
+function engagementBar(kind, target) {
+  const bar = element("div", "engagement-bar");
+  bar.dataset.engagement = `${kind}:${target.id}`;
+  const views = element("span", "view-count", `${(target.views || 0).toLocaleString()} view${target.views === 1 ? "" : "s"}`);
+  views.title = "One view per browser per UTC day when opened.";
+  const like = element("button", "action like-button", `${target.liked ? "♥ Liked" : "♡ Like"} · ${(target.likes || 0).toLocaleString()}`);
+  like.type = "button";
+  like.setAttribute("aria-pressed", String(Boolean(target.liked)));
+  like.setAttribute("aria-label", `${target.liked ? "Unlike" : "Like"} ${kind === "sets" ? "collection" : "media"}, ${target.likes || 0} likes`);
+  like.title = "One like per browser. Click again to remove your like.";
+  like.disabled = engagementRequests.has(`${kind}:${target.id}`);
+  like.addEventListener("click", () => {
+    document.querySelectorAll(`[data-engagement="${kind}:${target.id}"] .engagement-feedback`).forEach((node) => { node.textContent = ""; });
+    sendEngagement(kind, target.id, "like", { liked: !engagementTarget(kind, target.id)?.liked });
+  });
+  const feedback = element("span", "engagement-feedback");
+  feedback.setAttribute("role", "status");
+  bar.append(views, like, feedback);
+  return bar;
+}
 
 function element(tag, className, content) {
   const node = document.createElement(tag); // Builds content without treating titles or captions as executable HTML.
@@ -62,16 +119,18 @@ function renderCollections() {
   $("#set-count").textContent = String(state.sets.length).padStart(2, "0");
   $("#collection-grid").replaceChildren();
   for (const set of matching) {
-    const card = element("button", "collection-card");
-    card.type = "button";
+    const card = element("article", "collection-card");
+    const open = element("button", "collection-open");
+    open.type = "button"; // Keeps the collection opener and its like button separate for valid keyboard-accessible markup.
     const cover = element("div", "cover");
     const item = set.items.find((entry) => entry.id === set.cover_id) || set.items[0];
     if (item?.kind === "image") cover.append(mediaElement(item));
     else cover.append(element("span", "cover-symbol", item ? "▷" : "✧"));
     const copy = element("div", "card-copy");
     copy.append(element("p", "eyebrow", mediaCount(set.items)), element("h3", "", set.title), element("p", "", set.description.slice(0, 140)), element("p", "eyebrow", "Explore collection →"));
-    card.append(cover, copy);
-    card.addEventListener("click", () => openSet(set.id));
+    open.append(cover, copy);
+    open.addEventListener("click", () => { openSet(set.id); sendEngagement("sets", set.id, "view"); });
+    card.append(open, engagementBar("sets", set));
     $("#collection-grid").append(card);
   }
   $("#empty-state").hidden = matching.length > 0;
@@ -105,6 +164,7 @@ function renderDetail() {
   $("#set-title").textContent = set.title;
   $("#set-description").textContent = set.description;
   $("#set-meta").textContent = mediaCount(set.items);
+  $("#set-engagement").replaceChildren(engagementBar("sets", set));
   $("#media-empty").hidden = set.items.length > 0;
   $("#media-grid").replaceChildren();
   set.items.forEach((item, index) => {
@@ -118,6 +178,7 @@ function renderDetail() {
     open.append(cover);
     open.addEventListener("click", () => showViewer(index));
     card.append(open, element("p", "preserve-lines", item.caption || `${item.kind === "video" ? "Video" : "Photo"} ${index + 1}`));
+    card.append(engagementBar("items", item));
     if (state.admin) {
       const controls = element("div", "media-controls");
       controls.append(actionButton("Caption", () => {
@@ -148,8 +209,10 @@ function showViewer(index) {
   $("#viewer-media").replaceChildren(mediaElement(item, true)); // Removing the previous video also stops its playback.
   $("#viewer-caption").textContent = item.caption;
   $("#viewer-counter").textContent = `${state.viewerIndex + 1} / ${items.length}`;
+  $("#viewer-engagement").replaceChildren(engagementBar("items", item));
   $("#previous-media").disabled = $("#next-media").disabled = items.length < 2;
   if (!$("#viewer").open) $("#viewer").showModal();
+  sendEngagement("items", item.id, "view"); // Thumbnails and video range requests do not count as opens.
 }
 
 async function refresh() {

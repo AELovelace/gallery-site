@@ -9,7 +9,9 @@ login, collection API, and uploaded data independent of the game/editor.
   depend on a stylesheet served by the game host.
 - Keep inline comments explaining substantial functions and authentication or
   storage behavior. Use `textContent` for user-authored titles and captions.
-- All mutations require server-side authentication, same-origin checks and CSRF.
+- Content management requires owner authentication, same-origin checks and CSRF.
+  Public view/like endpoints accept anonymous sessions with signed visitor cookies,
+  and must still enforce same-origin and CSRF checks; this grants no editing rights.
   Keep credentials, uploads and SQLite outside the public web directory and Git.
 - Put Python scripts in `python/`, PowerShell scripts in `ps/`, and Fedora Bash
   deployment scripts in `server/gallery/fedora/`.
