@@ -129,9 +129,25 @@ test("invalid files, oversized files, invalid fields and cross-set covers are re
   assert.equal((await client.request(uploadRoute, { method: "POST", raw: true, body: Buffer.from('<svg onload="alert(1)"></svg>'), headers: { "Content-Type": "image/png" } })).status, 415);
   assert.equal((await client.request(uploadRoute, { method: "POST", raw: true, body: Buffer.alloc(1024 * 1024 + 1) })).status, 413);
   assert.deepEqual(await readdir(path.join(app.dataDir, "uploads")), []);
+  const exactLimit = Buffer.alloc(1024 * 1024);
+  png.copy(exactLimit);
+  assert.equal((await client.request(uploadRoute, { method: "POST", raw: true, body: exactLimit })).status, 201); // Accepts a file exactly at the configured boundary while the extra-byte case above is rejected.
   const otherId = (await client.request("/gallery/api/sets", { method: "POST", body: { title: "Other" } })).data.id;
   const itemId = (await client.request(`/gallery/api/sets/${otherId}/items`, { method: "POST", raw: true, body: png })).data.id;
   assert.equal((await client.request(`/gallery/api/sets/${id}`, { method: "PATCH", body: { cover_id: itemId } })).status, 400);
+});
+
+test("the default per-file upload limit advertised to the browser is 1 GiB", async (t) => {
+  const savedLimit = process.env.GALLERY_MAX_UPLOAD_MB;
+  let app;
+  try {
+    delete process.env.GALLERY_MAX_UPLOAD_MB;
+    app = await fixture(t, { maxUploadMB: undefined }); // Exercises the production default instead of the fixture's usual 1 MiB override.
+  } finally {
+    if (savedLimit === undefined) delete process.env.GALLERY_MAX_UPLOAD_MB;
+    else process.env.GALLERY_MAX_UPLOAD_MB = savedLimit;
+  }
+  assert.equal((await app.client().request("/gallery/api/session")).data.max_upload_mb, 1024);
 });
 
 test("login rate limits survive sessions and public routes do not expose storage", async (t) => {

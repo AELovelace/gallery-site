@@ -74,9 +74,23 @@ On Windows, `ps/start_gallery.ps1` also supports local or LAN startup.
    Captions also provide image descriptions for screen readers. Deletion is
    permanent after confirmation. Log out when finished.
 
-JPG, PNG, GIF, WebP, MP4 and WebM are accepted, up to 250 MB each by default.
-Videos need browser-playable codecs; no transcoding is provided. Video thumbnails
-use a play symbol. Photos retain their original resolution and metadata, so
+JPG, PNG, GIF, WebP, MP4 and WebM are accepted, up to 1 GiB (1024 MiB) each by default.
+The limit is per file, so a batch can exceed 1 GiB in total. Existing deployments
+keep their saved limit: set `GALLERY_MAX_UPLOAD_MB=1024` in
+`/etc/lidoll-gallery.env`, restart the gallery, and set nginx's
+`client_max_body_size 1024m;` before validating/reloading nginx. Refresh the
+gallery page to fetch the new limit. Alternatively, deploy with
+`--max-upload-mb 1024` and copy the installed nginx snippet to the proxy.
+Videos need browser-playable codecs; no transcoding is provided. MP4 and WebM
+cards and video collection covers show a still frame with a play overlay. The
+viewer uses the same frame as its poster before playback. Previews are created
+in the browser for both existing and new uploads, near the beginning of each
+video; no re-upload or server-side video tools are needed. Frames load as cards
+approach the viewport, with at most two decoders running and a 64-frame page
+cache. Preview requests do not count as views or start playback. If a browser
+cannot decode a video, or loading times out, the play overlay remains usable.
+Previews are regenerated after a page reload and are not saved on the server.
+Photos retain their original resolution and metadata, so
 upload versions suitable for public sharing. File-signature checks exclude
 HTML/SVG and unrecognized formats but do not fully decode or repair media.
 The gallery does not generate resized photo thumbnails or provide private drafts.
@@ -138,7 +152,8 @@ CSRF/origin checks, sessions, rate limits, upload validation, private-file
 isolation, video byte ranges, per-day view deduplication, idempotent likes/unlikes,
 visitor persistence, and reaction cleanup. Puppeteer is a development dependency used only
 for the browser checks; it downloads Chromium. Browser tests create their own
-image/video fixtures and save screenshots in ignored `output/gallery/`.
+image, MP4 and WebM fixtures, check still-frame previews and video covers/posters,
+and save screenshots in ignored `output/gallery/`.
 
 The release command creates `dist/lidoll-gallery-fedora.tar.gz` plus a SHA-256
 file. It packages an explicit list of production files, with Linux line endings,

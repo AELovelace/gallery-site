@@ -62,7 +62,7 @@ export function createGalleryServer(options = {}) {
   const origin = new URL(options.origin || process.env.GALLERY_ORIGIN || "http://localhost:8787").origin;
   const secure = origin.startsWith("https:");
   if (!secure && !["localhost", "127.0.0.1", "[::1]"].includes(new URL(origin).hostname)) throw new Error("Public galleries require an HTTPS GALLERY_ORIGIN.");
-  const maxUploadMB = Number(options.maxUploadMB || process.env.GALLERY_MAX_UPLOAD_MB || 250);
+  const maxUploadMB = Number(options.maxUploadMB || process.env.GALLERY_MAX_UPLOAD_MB || 1024); // Defaults to 1 GiB per file; the session response supplies this limit to the upload UI.
   if (!Number.isFinite(maxUploadMB) || maxUploadMB < 1 || maxUploadMB > 2048) throw new Error("GALLERY_MAX_UPLOAD_MB must be between 1 and 2048.");
   const adminPath = path.join(dataDir, "admin.json");
   if (!existsSync(adminPath)) throw new Error("Run node server/gallery/setup.mjs to create the gallery owner first.");
@@ -341,7 +341,7 @@ export function createGalleryServer(options = {}) {
       else response.destroy();
     }
   });
-  server.requestTimeout = 15 * 60 * 1000; // Allows large video uploads on slower connections while bounding abandoned requests.
+  server.requestTimeout = 60 * 60 * 1000; // Allows a 1 GiB video to upload over a slower connection while retaining a one-hour request deadline.
   server.headersTimeout = 20000;
   server.on("close", () => db.close());
   return server;

@@ -13,7 +13,7 @@ RELEASE_FILES = (
     "server/gallery/gallery.test.mjs", "server/gallery/gallery.env.example",
     "server/gallery/lidoll-gallery.service", "server/gallery/nginx-gallery.conf",
     "server/gallery/fedora/install.sh",
-    "web/gallery/index.html", "web/gallery/app.js", "web/gallery/preferences.js",
+    "web/gallery/index.html", "web/gallery/app.js", "web/gallery/preferences.js", "web/gallery/video-previews.js",
     "web/gallery/style.css", "web/gallery/theme.css",
 )
 

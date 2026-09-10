@@ -99,12 +99,27 @@ function mediaElement(item, full = false) {
     media.preload = full ? "metadata" : "none"; // Avoids downloading every video while browsing a collection.
     media.playsInline = true;
     media.setAttribute("aria-label", item.caption || "Video");
+    if (full) videoPreviews.watch(media, item.url, true);
   } else {
     media.alt = item.caption || "Photo from this collection";
     media.loading = full ? "eager" : "lazy";
     media.decoding = "async";
   }
   return media;
+}
+
+function mediaCover(item) {
+  const cover = element("div", "cover");
+  if (item?.kind === "video") {
+    const preview = element("img", "video-preview");
+    preview.alt = ""; // The enclosing button already names the video; its preview is decorative.
+    const play = element("span", "video-play", "▷");
+    play.setAttribute("aria-hidden", "true");
+    cover.append(preview, play);
+    videoPreviews.watch(preview, item.url);
+  } else if (item) cover.append(mediaElement(item));
+  else cover.append(element("span", "cover-symbol", "✧"));
+  return cover; // Gives collection covers and individual videos the same lazy still-frame preview and play affordance.
 }
 
 function mediaCount(items) {
@@ -122,10 +137,8 @@ function renderCollections() {
     const card = element("article", "collection-card");
     const open = element("button", "collection-open");
     open.type = "button"; // Keeps the collection opener and its like button separate for valid keyboard-accessible markup.
-    const cover = element("div", "cover");
     const item = set.items.find((entry) => entry.id === set.cover_id) || set.items[0];
-    if (item?.kind === "image") cover.append(mediaElement(item));
-    else cover.append(element("span", "cover-symbol", item ? "▷" : "✧"));
+    const cover = mediaCover(item);
     const copy = element("div", "card-copy");
     copy.append(element("p", "eyebrow", mediaCount(set.items)), element("h3", "", set.title), element("p", "", set.description.slice(0, 140)), element("p", "eyebrow", "Explore collection →"));
     open.append(cover, copy);
@@ -172,9 +185,7 @@ function renderDetail() {
     const open = element("button", "media-open");
     open.type = "button";
     open.setAttribute("aria-label", `Open ${item.kind === "video" ? "video" : "photo"} ${index + 1}: ${item.caption || set.title}`);
-    const cover = element("div", "cover");
-    if (item.kind === "video") cover.append(element("span", "cover-symbol", "▷"));
-    else cover.append(mediaElement(item));
+    const cover = mediaCover(item);
     open.append(cover);
     open.addEventListener("click", () => showViewer(index));
     card.append(open, element("p", "preserve-lines", item.caption || `${item.kind === "video" ? "Video" : "Photo"} ${index + 1}`));

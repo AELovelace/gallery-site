@@ -68,7 +68,8 @@ Fedora packages, creates the `lidoll-gallery` service user, installs source file
 and the systemd unit, runs the API tests, and starts the service. On first use,
 it prompts for an owner username and a hidden password of at least 12 characters.
 Existing credentials, collections, uploads, and environment settings are
-preserved when reinstalling, except that `--port` explicitly changes `PORT`.
+preserved when reinstalling, except that `--port` explicitly changes `PORT`
+and `--max-upload-mb` explicitly changes `GALLERY_MAX_UPLOAD_MB`.
 The app source/unit are updated. A listener belonging to another process on
 the selected port stops installation before services or app files are changed.
 
@@ -200,8 +201,12 @@ sudo systemctl reload nginx
 curl --fail https://lidoll.dev/gallery/api/sets
 ```
 
-The snippet preserves `/gallery/` and permits 250 MB per upload request, with
-streaming and longer timeouts for video. Gallery CSS, API calls and media all
+The snippet preserves `/gallery/` and defaults to 1 GiB per upload request
+(`1024m`, matching `GALLERY_MAX_UPLOAD_MB=1024`), with streaming and one-hour
+proxy send/read timeouts for video. Node allows up to one hour for a complete
+request; nginx's client-body inactivity timeout remains 120 seconds. Each file
+is sent as a raw request body, so the byte limits match without multipart overhead.
+Gallery CSS, API calls and media all
 travel through this route. The main site needs only its Gallery link:
 
 ```html
@@ -215,6 +220,9 @@ that index separately. No shared stylesheet update is required by this gallery.
 
 Open `https://lidoll.dev/gallery/`. Log in and create a test collection, upload
 photos and a video, then check playback/seeking, captions and cover selection.
+MP4/WebM thumbnails should show a still frame with a play overlay. Select a
+video as the collection cover and check its preview in the collection list.
+Opening a video should show its poster before playing from the beginning.
 Verify a signed-out window sees saved content and does not show editing controls.
 Try a larger video through nginx to validate the real proxy limits. Test the
 main index link, mobile layout, and logout. Like a collection and a media item
@@ -228,6 +236,15 @@ verification. From another LAN host, 8787 should be refused while it remains
 reachable from `10.1.1.20`.
 
 ## Updates, backups and password resets
+
+Video previews require the updated `web/gallery/index.html`, `app.js`,
+`video-previews.js`, and `style.css` together. The installer and release archive
+include them. Existing videos gain previews automatically after the page is
+refreshed; no database migration, upload conversion, additional Fedora package,
+or nginx setting is required. Each browser extracts a small still frame using
+the existing media byte-range endpoint and its own supported codecs. Large
+videos may need several range requests before a preview appears; preview
+decoders time out after 20 seconds and leave the play overlay as a fallback.
 
 Install a new release using the same installer from a separate extracted folder
 or checkout. It restarts the app and preserves `/var/lib/lidoll-gallery` and the
@@ -291,6 +308,34 @@ curl --fail https://lidoll.dev/gallery/api/sets
 The public URL stays `https://lidoll.dev/gallery/`; `GALLERY_ORIGIN` stays
 `https://lidoll.dev`. Existing firewall rules on the old port are retained
 because another application may depend on them; review those separately.
+
+## Changing the per-file upload limit
+
+On the backend, edit `/etc/lidoll-gallery.env` and replace the existing upload
+limit with `GALLERY_MAX_UPLOAD_MB=1024`, then run
+`sudo systemctl restart lidoll-gallery`. The setting uses MiB: 1024 permits
+1,073,741,824 bytes (1 GiB) per file. A batch may contain multiple files of that
+size. The environment setting already works in earlier gallery releases.
+
+On the proxy, set `client_max_body_size 1024m;` in the gallery location in
+`/etc/nginx/snippets/nginx-gallery.conf`. Run
+`sudo nginx -t && sudo systemctl reload nginx`. Refresh the gallery page so
+its session reads the new limit. Both servers must allow the larger request.
+
+For deployment through the updated installer, use:
+
+```sh
+sudo bash server/gallery/fedora/install.sh --zone FedoraServer --max-upload-mb 1024
+```
+
+The saved gallery port is reused. This updates only the upload-limit setting,
+prepares the installed nginx snippet with matching port/size settings, and
+restarts the gallery. Copy that snippet to the proxy and validate/reload nginx.
+The installer accepts integer limits from 1 to 2048 MiB and preserves a saved
+limit when the flag is omitted. New installations default to 1024 MiB. Existing
+250 MiB configurations therefore need an explicit change. This release also
+raises Node's total request deadline from 15 minutes to one hour; deploy the
+updated backend and proxy timeouts for large uploads on slow connections.
 
 For a `502`, check the service log, test the backend from the proxy, and inspect
 recent SELinux denials with `sudo ausearch -m AVC -ts recent` on the affected

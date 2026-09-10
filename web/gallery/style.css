@@ -43,9 +43,12 @@ input[type=file] { border-style: dashed; padding: 20px; }
 .engagement-feedback:empty { display: none; }
 #viewer-engagement .engagement-bar { justify-content: center; margin-bottom: 16px; }
 #viewer-engagement .engagement-feedback { text-align: center; }
-.cover { aspect-ratio: 4/3; overflow: hidden; display: grid; place-items: center; background: linear-gradient(135deg, #a474d622, #ff96c811), var(--panel); }
+.cover { position: relative; aspect-ratio: 4/3; overflow: hidden; display: grid; place-items: center; background: linear-gradient(135deg, #a474d622, #ff96c811), var(--panel); }
 .cover img, .cover video { width: 100%; height: 100%; object-fit: cover; }
 .cover-symbol { color: var(--orchid); font-size: 4rem; }
+.video-preview { opacity: 0; }
+.video-preview.preview-ready { opacity: 1; }
+.video-play { position: absolute; display: grid; place-items: center; width: 3.5rem; height: 3.5rem; border: 1px solid var(--pink); border-radius: 50%; background: #1a0611cc; color: var(--pink); font-size: 2rem; pointer-events: none; }
 .card-copy { padding: 20px; overflow-wrap: anywhere; }
 .card-copy p { color: var(--muted); font-size: .85rem; line-height: 1.6; margin: 8px 0; }
 .card-copy .eyebrow { color: var(--pink); font-size: .65rem; }

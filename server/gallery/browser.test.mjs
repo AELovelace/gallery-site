@@ -46,14 +46,14 @@ try {
   await page.click('#edit-form [type="submit"]');
   await page.waitForSelector("#set-detail:not([hidden])");
 
-  // Records a real WebM in Chromium so playback is checked, rather than only a synthetic container header.
-  const videoBytes = await page.evaluate(async () => {
+  // Records real MP4 and WebM fixtures so preview extraction exercises actual browser decoding.
+  const recordVideo = (mimeType) => page.evaluate(async (mimeType) => {
     const canvas = document.createElement("canvas");
     canvas.width = 160;
     canvas.height = 120;
     const context = canvas.getContext("2d");
     const stream = canvas.captureStream(12);
-    const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+    const recorder = new MediaRecorder(stream, { mimeType });
     const chunks = [];
     const finished = new Promise((resolve) => { recorder.onstop = resolve; });
     recorder.ondataavailable = (event) => chunks.push(event.data);
@@ -68,9 +68,10 @@ try {
     await finished;
     clearInterval(interval);
     stream.getTracks().forEach((track) => track.stop());
-    return Array.from(new Uint8Array(await new Blob(chunks, { type: "video/webm" }).arrayBuffer()));
-  });
-  const videoPath = path.join(dataDir, "sample.webm");
+    return Array.from(new Uint8Array(await new Blob(chunks, { type: mimeType }).arrayBuffer()));
+  }, mimeType);
+  const videoBytes = await recordVideo("video/mp4;codecs=avc1.42001E");
+  const videoPath = path.join(dataDir, "sample.mp4");
   await writeFile(videoPath, Buffer.from(videoBytes));
   const imagePath = path.join(dataDir, "sample.png");
   await writeFile(imagePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64")); // Keeps browser fixtures independent of the game repository.
@@ -78,14 +79,21 @@ try {
   await page.click('#upload-form [type="submit"]');
   await page.waitForFunction(() => document.querySelectorAll(".media-card").length === 2);
   assert.match(await page.$eval("#upload-status", (node) => node.textContent), /2 files uploaded/);
+  await page.waitForFunction(() => document.querySelector(".media-card:nth-child(2) .video-preview.preview-ready")?.naturalWidth > 0);
+  assert.equal(await page.$("#media-grid video"), null); // Thumbnails are still pictures, with no embedded autoplaying players.
+  assert.equal(await page.$eval(".media-card:nth-child(2) .view-count", (node) => node.textContent), "0 views");
   await page.click(".media-open");
   await page.waitForFunction(() => document.querySelector("#viewer-media img")?.naturalWidth > 0);
   await page.keyboard.press("ArrowRight");
   await page.waitForFunction(() => document.querySelector("#viewer-media video")?.readyState >= 1);
+  await page.waitForFunction(() => document.querySelector("#viewer-media video")?.poster.startsWith("blob:"));
+  assert.equal(await page.$eval("#viewer-media video", (video) => video.paused && video.currentTime === 0), true);
   await page.$eval("#viewer-media video", (video) => video.play());
   assert.equal(await page.$eval("#viewer-media video", (video) => video.paused), false);
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => document.querySelector("#viewer-media").childElementCount === 0);
+  await page.click(".media-card:nth-child(2) .media-controls button:nth-child(2)");
+  await page.waitForFunction(() => document.querySelector(".media-card:nth-child(2) .media-controls button:nth-child(2)")?.textContent === "Current cover");
   await page.click(".media-controls button");
   await page.type('#caption-form [name="caption"]', '<img src=x onerror="alert(1)"> A tiny portrait');
   await page.click('#caption-form [type="submit"]');
@@ -114,6 +122,7 @@ try {
   await page.waitForSelector("#login-button:not([hidden])");
   await page.reload();
   await page.waitForSelector(".collection-card");
+  await page.waitForFunction(() => document.querySelector(".collection-card .video-preview.preview-ready")?.naturalWidth > 0); // Existing MP4 uploads regenerate previews for signed-out visitors after a reload.
   assert.equal(await page.$eval("#manager", (node) => node.hidden), true);
   await page.click(".collection-card .like-button");
   await page.waitForSelector('.collection-card .like-button[aria-pressed="true"]:not(:disabled)');
@@ -152,8 +161,25 @@ try {
   await page.goto(`${origin}/`);
   assert.equal(new URL(page.url()).pathname, "/gallery/");
   assert.equal(await page.$eval('.gallery-header nav a[href="../"]', (node) => node.textContent), "Back to game");
+  const webmBytes = await recordVideo("video/webm");
+  await page.evaluate(async (bytes) => {
+    const src = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "video/webm" }));
+    const cover = mediaCover({ kind: "video", url: src });
+    cover.id = "webm-preview-check";
+    document.body.append(cover);
+    cover.scrollIntoView();
+  }, webmBytes);
+  await page.waitForFunction(() => document.querySelector("#webm-preview-check .preview-ready")?.naturalWidth > 0);
+  await page.evaluate(() => {
+    const cover = mediaCover({ kind: "video", url: "/gallery/media/missing-preview-test" });
+    cover.id = "failed-preview-check";
+    document.body.append(cover);
+    cover.scrollIntoView();
+  });
+  await page.waitForSelector('#failed-preview-check img[data-preview-state="unavailable"]');
+  assert.ok(await page.$("#failed-preview-check .video-play")); // A missing or undecodable video keeps its play affordance without breaking the gallery.
   assert.deepEqual(errors, []);
-  console.log("Browser checks passed: login, uploads, playback, partial retry, captions, editing, search, logout, public likes, persistent reactions, deduplicated views, mobile layout, root redirect.");
+  console.log("Browser checks passed: MP4/WebM previews, video collection covers, idle viewer posters, preview failure fallback, login, uploads, playback, partial retry, captions, editing, search, logout, public likes, persistent reactions, deduplicated views, mobile layout, root redirect.");
 } catch (error) {
   console.error("Browser verification failed:", error);
   process.exitCode = 1;

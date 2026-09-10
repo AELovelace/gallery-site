@@ -5,17 +5,19 @@ set -euo pipefail
 die() { printf 'Gallery installer: %s\n' "$*" >&2; exit 1; }
 usage() { # Shows installation options without requiring root or changing the host.
   cat <<'USAGE'
-Usage: sudo bash server/gallery/fedora/install.sh [--zone YOUR_LAN_ZONE] [--port PORT]
+Usage: sudo bash server/gallery/fedora/install.sh [--zone YOUR_LAN_ZONE] [--port PORT] [--max-upload-mb MIB]
 
 Install or update the gallery backend on Fedora at 10.1.1.23.
 The firewall zone is detected from the backend's network interface by default.
 Use --zone to require a specific zone; a mismatch stops installation.
 Use --port to set the gallery port (1024-65535). Otherwise preserve the saved
 PORT in /etc/lidoll-gallery.env, or use 8787 for a new installation.
+Use --max-upload-mb to set a per-file limit (1-2048 MiB). Otherwise preserve
+GALLERY_MAX_UPLOAD_MB, or use 1024 (1 GiB) for a new installation.
 
 Requires running firewalld and an interactive terminal for first owner setup.
 Uses existing /usr/bin/node-24 (24.9+); installs nodejs24 only if that binary is absent.
-Preserves credentials, uploads, database, and environment settings except an explicit --port change.
+Preserves credentials, uploads, database, and environment settings except explicit port/upload-limit changes.
 Configure the separate nginx proxy using FEDORA.md after installation.
 
   -h, --help   Show this help and exit.
@@ -23,6 +25,7 @@ USAGE
 }
 gallery_zone=''
 gallery_port=''
+gallery_upload_mb=''
 if [[ $# -eq 1 && ( $1 == --help || $1 == -h ) ]]; then usage; exit 0; fi
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -32,10 +35,14 @@ while [[ $# -gt 0 ]]; do
     --port)
       [[ $# -ge 2 && -z $gallery_port && $2 =~ ^[1-9][0-9]{3,4}$ ]] || die '--port requires one number from 1024 to 65535 and may be supplied only once.'
       gallery_port=$2; shift 2 ;;
+    --max-upload-mb)
+      [[ $# -ge 2 && -z $gallery_upload_mb && $2 =~ ^[1-9][0-9]{0,3}$ ]] || die '--max-upload-mb requires one integer from 1 to 2048 and may be supplied only once.'
+      gallery_upload_mb=$2; shift 2 ;;
     *) die "Unknown option: $1. Use --help for usage." ;;
   esac
 done # Parses independent zone and port options without treating arguments as shell code.
 [[ -z $gallery_port ]] || (( gallery_port >= 1024 && gallery_port <= 65535 )) || die '--port must be between 1024 and 65535.'
+[[ -z $gallery_upload_mb ]] || (( gallery_upload_mb <= 2048 )) || die '--max-upload-mb must be between 1 and 2048.'
 [[ $EUID -eq 0 ]] || die 'Run this installer with sudo.'
 [[ -f /etc/fedora-release && ! -e /run/ostree-booted ]] || die 'This installer requires conventional Fedora Server/Workstation with dnf, not an Atomic image.'
 gallery_source=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)
@@ -52,6 +59,14 @@ if [[ -z $gallery_port && -f /etc/lidoll-gallery.env ]]; then
 fi # Reads only the saved port; never sources the environment file as root shell code.
 if [[ -z $gallery_port && ! -f /etc/lidoll-gallery.env ]]; then gallery_port=8787; fi
 [[ $gallery_port =~ ^[1-9][0-9]{3,4}$ ]] && (( gallery_port >= 1024 && gallery_port <= 65535 )) || die 'Saved PORT must be a number from 1024 to 65535; use --port to replace it.'
+gallery_set_upload_mb=$gallery_upload_mb
+if [[ -z $gallery_upload_mb && -f /etc/lidoll-gallery.env ]]; then
+  gallery_upload_mb=$(awk '/^[[:space:]]*GALLERY_MAX_UPLOAD_MB[[:space:]]*=/ { sub(/^[[:space:]]*GALLERY_MAX_UPLOAD_MB[[:space:]]*=[[:space:]]*/, ""); sub(/[[:space:]]*$/, ""); value=$0; found=1 } END { if (found) print value; else print "1024" }' /etc/lidoll-gallery.env)
+  gallery_upload_mb=${gallery_upload_mb#\"}; gallery_upload_mb=${gallery_upload_mb%\"}
+  gallery_upload_mb=${gallery_upload_mb#\'}; gallery_upload_mb=${gallery_upload_mb%\'}
+fi # Preserves the saved limit while preparing nginx with the same value, without executing the environment file.
+if [[ -z $gallery_upload_mb && ! -f /etc/lidoll-gallery.env ]]; then gallery_upload_mb=1024; fi
+[[ $gallery_upload_mb =~ ^[1-9][0-9]{0,3}$ ]] && (( gallery_upload_mb <= 2048 )) || die 'Saved GALLERY_MAX_UPLOAD_MB must be an integer from 1 to 2048; use --max-upload-mb to replace it.'
 
 # Uses an explicit file list so uploads, credentials, Git history, and the game are never installed as website files.
 gallery_files=(
@@ -60,6 +75,7 @@ gallery_files=(
   server/gallery/gallery.env.example server/gallery/lidoll-gallery.service
   server/gallery/nginx-gallery.conf
   web/gallery/index.html web/gallery/app.js web/gallery/preferences.js
+  web/gallery/video-previews.js
   web/gallery/style.css web/gallery/theme.css
 )
 for gallery_file in "${gallery_files[@]}"; do
@@ -148,7 +164,12 @@ if [[ -n $gallery_set_port ]]; then
   sed -i -E '/^[[:space:]]*PORT[[:space:]]*=/d' /etc/lidoll-gallery.env
   printf '\nPORT=%s\n' "$gallery_port" >> /etc/lidoll-gallery.env
 fi # An explicit --port changes only PORT; future installs preserve that saved choice.
+if [[ -n $gallery_set_upload_mb ]]; then
+  sed -i -E '/^[[:space:]]*GALLERY_MAX_UPLOAD_MB[[:space:]]*=/d' /etc/lidoll-gallery.env
+  printf '\nGALLERY_MAX_UPLOAD_MB=%s\n' "$gallery_upload_mb" >> /etc/lidoll-gallery.env
+fi # Applies an explicitly requested upload limit to existing installations, preserving other saved settings.
 sed -i "s|http://10.1.1.23:8787|http://10.1.1.23:$gallery_port|g" "$gallery_app/server/gallery/nginx-gallery.conf" # Prepares the matching snippet for the owner to copy to the separate proxy.
+sed -i -E "s|client_max_body_size [0-9]+m;|client_max_body_size ${gallery_upload_mb}m;|" "$gallery_app/server/gallery/nginx-gallery.conf" # Keeps the proxy's per-request byte limit aligned with the backend's per-file byte limit.
 install -o root -g root -m 0644 "$gallery_source/server/gallery/lidoll-gallery.service" /etc/systemd/system/lidoll-gallery.service
 restorecon -RF "$gallery_app" "$gallery_data" /etc/lidoll-gallery.env /etc/systemd/system/lidoll-gallery.service # Applies Fedora's normal SELinux labels without disabling enforcement.
 
