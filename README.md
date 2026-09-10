@@ -13,8 +13,20 @@ https://lidoll.dev/gallery/ → nginx 10.1.1.20 → Node 10.1.1.23:8787
 The service runs under systemd as `lidoll-gallery`, with root-owned application
 files in `/opt/lidoll-gallery` and private persistent data in
 `/var/lib/lidoll-gallery`. The Fedora installer creates the account, checks the
-Node version, installs the app/unit, prompts for owner credentials on first use,
+existing Node version (24.9+), installs missing deployment dependencies and
+the app/unit, prompts for owner credentials on first use,
 adds firewalld rules for the proxy, and starts/checks the service.
+
+On the Fedora backend, from an extracted release or this checkout, run:
+
+```sh
+sudo bash server/gallery/fedora/install.sh
+```
+
+The installer detects the LAN interface's firewall zone. Firewalld must already
+be configured and running; see [FEDORA.md](FEDORA.md) for initial setup and the
+separate nginx proxy steps. Use `--zone public` to require a particular zone, or
+`--help` to display usage without making changes.
 
 ## Repository and runtime
 
@@ -23,12 +35,17 @@ at `web/gallery/theme.css`; nginx forwards every gallery asset/API/media request
 to this service. The main website only needs a link to `/gallery/`. Its existing
 game, TLS setup, and other routes remain independently deployed.
 
-Production requires Node 24.14+ with built-in SQLite. No npm dependencies are
+The gallery's compatibility minimum is Node 24.9 with built-in SQLite. No npm dependencies are
 needed to run the gallery. Fedora uses the explicit `/usr/bin/node-24` binary.
 There is no default owner password or public registration. Run owner setup on
 the backend host; do not put a password in a config file or Git.
 
-For local development with Node 24.14+:
+The installer reuses `/usr/bin/node-24` when present and installs `nodejs24`
+only when that binary is missing. It does not request a Node upgrade or change
+the default `node` command. Node 24.9.0 passes the API suite; keep runtime security
+updates and Fedora maintenance on the host's normal maintenance schedule.
+
+For local development with Node 24.9+:
 
 ```sh
 node server/gallery/setup.mjs

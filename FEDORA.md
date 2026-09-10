@@ -30,9 +30,10 @@ ip -br -4 address
 sudo firewall-cmd --get-active-zones
 ```
 
-Use the zone assigned to the interface holding `10.1.1.23`. For example, if it
-is `public`, the installation command below uses `--zone public`. The installer
-checks the selected zone against that interface and refuses a mismatch.
+The installer detects the zone assigned to the interface holding `10.1.1.23`,
+falling back to firewalld's default zone when the interface has no explicit zone.
+You can require a particular zone with `--zone public`, for example. The installer
+checks it against that interface and refuses a mismatch before installing packages.
 
 If firewalld is not installed/running, install and start it after ensuring its
 zone permits your existing SSH/management access:
@@ -55,22 +56,64 @@ Rule priority/zone behavior follows the [firewalld rich-language reference](http
 From the extracted release or cloned repository on `10.1.1.23`:
 
 ```sh
-sudo bash server/gallery/fedora/install.sh --zone public
+sudo bash server/gallery/fedora/install.sh
 ```
 
-Substitute your actual LAN zone. The installer checks the host/IP, installs
+Optionally append `--zone YOUR_LAN_ZONE` to require a specific firewall zone.
+Run `bash server/gallery/fedora/install.sh --help` for usage; help needs no sudo
+and makes no changes. Before installing packages, the installer checks the
+host/IP, running firewalld, runtime/permanent zone availability, and whether
+first-time owner setup has an interactive terminal. It then installs
 Fedora packages, creates the `lidoll-gallery` service user, installs source files
 and the systemd unit, runs the API tests, and starts the service. On first use,
 it prompts for an owner username and a hidden password of at least 12 characters.
 Existing credentials, collections, uploads, and `/etc/lidoll-gallery.env` are
 preserved when reinstalling. The app source/unit are updated.
 
+The host must already have `iproute` and running, configured `firewalld` for
+these checks. If either is missing, install it with `sudo dnf install iproute
+firewalld`, then follow the firewall setup above before rerunning the installer.
+
 The installer uses Fedora's `nodejs24` package and `/usr/bin/node-24`, independently
 of `/usr/bin/node`. Fedora supports [versioned Node streams](https://developer.fedoraproject.org/tech/languages/nodejs/nodejs.html)
 and documents the [versioned binary paths](https://fedoraproject.org/wiki/Changes/NodejsAlternativesSystem).
-If the runtime check reports a version older than 24.14, update `nodejs24` and its
-dependencies before rerunning. Node 24's built-in SQLite may print an experimental
-warning; that warning alone does not indicate failure.
+The compatibility minimum is Node 24.9 within the 24.x stream. The complete API
+suite passes on upstream Node 24.9.0 on Windows; the installer also runs that
+suite on the Fedora host's actual runtime. The gallery uses SQLite APIs already
+present in [Node 24.9](https://nodejs.org/download/release/v24.9.0/docs/api/sqlite.html).
+Node 12.9 cannot run this gallery: it lacks the built-in SQLite module.
+
+An existing `/usr/bin/node-24` is reused without requesting a Node upgrade. If
+that binary is absent, the installer requests the `nodejs24` package. Other
+deployment packages are requested only if missing. Installing missing packages
+may also install or update dependencies as required by DNF; review a host's
+package dependencies separately when planning maintenance.
+
+If an older installer rejects Node 24.9.0 with a "24.14+ is required" error,
+copy the updated release and rerun its installer. That earlier minimum was
+stricter than the APIs used by the gallery require; changing Fedora or the
+default Node version is not necessary to resolve this particular error.
+If runtime validation still fails, collect:
+
+```sh
+cat /etc/fedora-release
+sudo dnf --refresh list --available nodejs24
+dnf repolist
+```
+
+Keep runtime security updates and OS maintenance separate from compatibility
+checks: passing gallery tests does not establish that an old runtime or OS has
+current security fixes. Fedora 41 reached
+[end of life on December 15, 2025](https://fedorapeople.org/groups/schedule/f-41/f-41-key-tasks.html).
+Its repositories may remain at Node 24.9.0 after "Nothing to do." Plan OS
+maintenance with the other applications on that machine; the gallery installer
+does not perform OS upgrades or reboots.
+
+Changing the default `node` command does
+not change `/usr/bin/node-24`, which is used by both the installer and systemd.
+The installer stops before copying app files or stopping the gallery if this
+check fails. Node 24's built-in SQLite may print an experimental warning; that
+warning alone does not indicate failure.
 
 The installed layout is:
 

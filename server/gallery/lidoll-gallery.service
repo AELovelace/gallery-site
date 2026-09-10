@@ -9,6 +9,7 @@ User=lidoll-gallery
 Group=lidoll-gallery
 WorkingDirectory=/opt/lidoll-gallery
 EnvironmentFile=/etc/lidoll-gallery.env
+# The installer accepts this existing runtime at 24.9+; changing the default node command has no effect here.
 ExecStart=/usr/bin/node-24 /opt/lidoll-gallery/server/gallery/server.mjs
 Restart=on-failure
 RestartSec=5

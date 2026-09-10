@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24.14.0" },
+  "engines": { "node": ">=24.9.0" },
   "scripts": {
     "setup": "node server/gallery/setup.mjs",
     "start": "node server/gallery/server.mjs",
