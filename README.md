@@ -16,6 +16,8 @@ files in `/opt/lidoll-gallery` and private persistent data in
 existing Node version (24.9+), installs missing deployment dependencies and
 the app/unit, prompts for owner credentials on first use,
 adds firewalld rules for the proxy, and starts/checks the service.
+Tests and owner setup run from `/opt/lidoll-gallery` as the service account,
+so the source checkout can remain inside a private home directory.
 
 On the Fedora backend, from an extracted release or this checkout, run:
 
@@ -27,6 +29,11 @@ The installer detects the LAN interface's firewall zone. Firewalld must already
 be configured and running; see [FEDORA.md](FEDORA.md) for initial setup and the
 separate nginx proxy steps. Use `--zone public` to require a particular zone, or
 `--help` to display usage without making changes.
+If another application owns port 8787, use `--port 8788` (or another free port).
+The installer saves that port, configures its firewall rules and health check,
+and prepares `/opt/lidoll-gallery/server/gallery/nginx-gallery.conf` with the
+matching upstream. Copy that installed snippet to the proxy; later installs
+reuse the saved port. See [changing the port](FEDORA.md#changing-the-gallery-port).
 
 ## Repository and runtime
 

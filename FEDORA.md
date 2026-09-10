@@ -67,8 +67,27 @@ first-time owner setup has an interactive terminal. It then installs
 Fedora packages, creates the `lidoll-gallery` service user, installs source files
 and the systemd unit, runs the API tests, and starts the service. On first use,
 it prompts for an owner username and a hidden password of at least 12 characters.
-Existing credentials, collections, uploads, and `/etc/lidoll-gallery.env` are
-preserved when reinstalling. The app source/unit are updated.
+Existing credentials, collections, uploads, and environment settings are
+preserved when reinstalling, except that `--port` explicitly changes `PORT`.
+The app source/unit are updated. A listener belonging to another process on
+the selected port stops installation before services or app files are changed.
+
+The installer changes its working directory to `/opt/lidoll-gallery` before
+running tests or owner setup as `lidoll-gallery`. A private source directory
+such as `/home/aedith/gallery-site` does not need to be accessible to that user.
+Older installers can fail with `EACCES: permission denied, lstat` on the source
+directory because Node's test discovery also inspects the inherited working
+directory, even when given an absolute test filename. Copy the corrected
+installer and rerun, or resume that older copy from the installed app directory:
+
+```sh
+cd /opt/lidoll-gallery
+sudo bash /home/aedith/gallery-site/server/gallery/fedora/install.sh --zone FedoraServer
+```
+
+Use your actual source path and LAN zone. This workaround applies after the
+failed installer has already created `/opt/lidoll-gallery`. Keep the permissions
+on your home directory unchanged; tests still run as the service account.
 
 The host must already have `iproute` and running, configured `firewalld` for
 these checks. If either is missing, install it with `sudo dnf install iproute
@@ -144,7 +163,9 @@ Secure and its origin is deliberately `https://lidoll.dev`.
 
 ## 4. Route the gallery through nginx on 10.1.1.20
 
-Copy `server/gallery/nginx-gallery.conf` to the proxy. On a Fedora nginx proxy,
+Copy `/opt/lidoll-gallery/server/gallery/nginx-gallery.conf` from the backend
+to the proxy. The installer renders this installed snippet with the selected
+port; the repository template uses the default 8787. On a Fedora nginx proxy,
 put it in `/etc/nginx/snippets/nginx-gallery.conf`:
 
 ```sh
@@ -229,8 +250,72 @@ sudo -u lidoll-gallery env GALLERY_DATA_DIR=/var/lib/lidoll-gallery /usr/bin/nod
 For configuration changes, edit `/etc/lidoll-gallery.env`, then run
 `sudo systemctl restart lidoll-gallery`. The installer targets the given IPs and
 default paths; update its templates/checks as well if you change that topology.
+For port changes, also update the firewall and proxy as described below.
+
+## Changing the gallery port
+
+Examples elsewhere in this guide use the default port 8787. If another app owns
+that port, choose a free unprivileged port such as 8788. On the backend, check
+it first (no output means no TCP listener currently occupies it):
+
+```sh
+sudo ss -ltnp 'sport = :8788'
+```
+
+Copy the updated installer to your checkout and run it from that separate
+checkout, using the actual LAN firewall zone:
+
+```sh
+sudo bash /home/aedith/gallery-site/server/gallery/fedora/install.sh --zone FedoraServer --port 8788
+```
+
+This stops/restarts only `lidoll-gallery`, changes its `PORT` setting, adds the
+proxy-only firewall rules for 8788, and checks that endpoint. It also handles
+a gallery stuck in an automatic restart loop. Omitting `--port` on future
+installs reuses the saved `PORT`; a new installation defaults to 8787. The
+installer supports ports 1024 through 65535 and rejects unrelated listeners
+on the chosen port. No process is killed to free a port.
+
+On the nginx proxy, replace the gallery snippet with the rendered backend copy
+from `/opt/lidoll-gallery/server/gallery/nginx-gallery.conf`. For an already
+installed default snippet, changing its `proxy_pass` destination to
+`http://10.1.1.23:8788` is equivalent. Preserve the URL path (no trailing slash
+after the port). Validate and reload nginx, then test:
+
+```sh
+sudo nginx -t && sudo systemctl reload nginx
+curl --noproxy '*' --fail http://10.1.1.23:8788/gallery/api/sets
+curl --fail https://lidoll.dev/gallery/api/sets
+```
+
+The public URL stays `https://lidoll.dev/gallery/`; `GALLERY_ORIGIN` stays
+`https://lidoll.dev`. Existing firewall rules on the old port are retained
+because another application may depend on them; review those separately.
 
 For a `502`, check the service log, test the backend from the proxy, and inspect
 recent SELinux denials with `sudo ausearch -m AVC -ts recent` on the affected
 host. For `413`, check nginx's request-body limit and the server upload limit.
 For login `403`, check `GALLERY_ORIGIN` and the browser's exact HTTPS hostname.
+
+For `Cannot GET /gallery/`, compare the backend and public responses from the
+nginx proxy host (`10.1.1.20`):
+
+```sh
+curl --noproxy '*' --max-time 10 -i http://10.1.1.23:8787/gallery/api/sets
+curl --max-time 10 -i https://lidoll.dev/gallery/api/sets
+```
+
+The backend should return HTTP 200 and a JSON object with a `sets` array. An
+HTML `Cannot GET` response with `X-Powered-By: Express` comes from a different
+application; this gallery uses Node's built-in HTTP server. If the direct
+backend works but the public URL returns that error, check the `/gallery/`
+location in the active HTTPS server for `lidoll.dev` on the proxy. It must
+forward to `http://10.1.1.23:8787` and preserve the `/gallery/` path, as in the
+supplied snippet. Check for an omitted include, a conflicting route, or an
+unreloaded configuration. The backend installer does not configure the proxy.
+For nginx managed by configuration files, `sudo nginx -T` shows the loaded
+configuration on disk; validate with `sudo nginx -t` before reloading. For a
+proxy managed through a UI, edit its route through that manager instead of
+editing generated files. If the direct backend fails too, check
+`sudo systemctl status lidoll-gallery --no-pager` and its journal on the backend
+before changing proxy routes.
