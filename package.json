@@ -1,0 +1,15 @@
+{
+  "name": "lidoll-gallery",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.14.0" },
+  "scripts": {
+    "setup": "node server/gallery/setup.mjs",
+    "start": "node server/gallery/server.mjs",
+    "test": "node --test server/gallery/gallery.test.mjs",
+    "test:browser": "node server/gallery/browser.test.mjs",
+    "package:fedora": "python3 python/package_release.py"
+  },
+  "devDependencies": { "puppeteer": "24.43.1" }
+}

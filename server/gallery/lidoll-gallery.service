@@ -1,0 +1,25 @@
+[Unit]
+Description=LiDOLL photo and video gallery
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lidoll-gallery
+Group=lidoll-gallery
+WorkingDirectory=/opt/lidoll-gallery
+EnvironmentFile=/etc/lidoll-gallery.env
+ExecStart=/usr/bin/node-24 /opt/lidoll-gallery/server/gallery/server.mjs
+Restart=on-failure
+RestartSec=5
+StateDirectory=lidoll-gallery
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lidoll-gallery
+
+[Install]
+WantedBy=multi-user.target

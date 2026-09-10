@@ -1,0 +1,147 @@
+import assert from "node:assert/strict";
+import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { once } from "node:events";
+import { createServer } from "node:net";
+import puppeteer from "puppeteer";
+import { createGalleryServer, passwordRecord } from "./server.mjs";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const dataDir = await mkdtemp(path.join(tmpdir(), "lidoll-gallery-browser-"));
+const probe = createServer();
+probe.listen(0, "127.0.0.1");
+await once(probe, "listening");
+const port = Number(process.env.GALLERY_TEST_PORT || probe.address().port);
+await new Promise((resolve) => probe.close(resolve)); // Selects an available ephemeral port outside Windows' excluded service ranges.
+const origin = `http://127.0.0.1:${port}`;
+let browser;
+let server;
+try {
+  await writeFile(path.join(dataDir, "admin.json"), JSON.stringify(await passwordRecord("doll", "browser-test-password")));
+  server = createGalleryServer({ dataDir, origin, maxUploadMB: 1 });
+  server.listen(port, "127.0.0.1");
+  await once(server, "listening");
+  console.log("Starting Chromium for gallery verification…");
+  browser = await puppeteer.launch({ headless: true, pipe: true });
+  const page = await browser.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.setViewport({ width: 1440, height: 1100 });
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+  await page.goto(`${origin}/gallery/`);
+  console.log("Gallery loaded; checking owner workflow…");
+  await page.waitForSelector("#empty-state:not([hidden])");
+  assert.equal(await page.$eval("#manager", (node) => node.hidden), true);
+  assert.equal(await page.$eval("#crt-toggle", (node) => node.getAttribute("aria-pressed")), "false");
+  await page.click("#login-button");
+  await page.type('#login-form [name="username"]', "doll");
+  await page.type('#login-form [name="password"]', "browser-test-password");
+  await page.click('#login-form [type="submit"]');
+  await page.waitForSelector("#manager:not([hidden])");
+  await page.click("#new-set");
+  await page.type('#edit-form [name="title"]', "Scenes from the kingdom");
+  await page.type('#edit-form [name="description"]', "A test collection of photos and little films.");
+  await page.click('#edit-form [type="submit"]');
+  await page.waitForSelector("#set-detail:not([hidden])");
+
+  // Records a real WebM in Chromium so playback is checked, rather than only a synthetic container header.
+  const videoBytes = await page.evaluate(async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 160;
+    canvas.height = 120;
+    const context = canvas.getContext("2d");
+    const stream = canvas.captureStream(12);
+    const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+    const chunks = [];
+    const finished = new Promise((resolve) => { recorder.onstop = resolve; });
+    recorder.ondataavailable = (event) => chunks.push(event.data);
+    recorder.start();
+    let tick = 0;
+    const interval = setInterval(() => {
+      context.fillStyle = tick++ % 2 ? "#ff96c8" : "#370f2d";
+      context.fillRect(0, 0, 160, 120);
+    }, 80);
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    recorder.stop();
+    await finished;
+    clearInterval(interval);
+    stream.getTracks().forEach((track) => track.stop());
+    return Array.from(new Uint8Array(await new Blob(chunks, { type: "video/webm" }).arrayBuffer()));
+  });
+  const videoPath = path.join(dataDir, "sample.webm");
+  await writeFile(videoPath, Buffer.from(videoBytes));
+  const imagePath = path.join(dataDir, "sample.png");
+  await writeFile(imagePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64")); // Keeps browser fixtures independent of the game repository.
+  await (await page.$("#upload-files")).uploadFile(imagePath, videoPath);
+  await page.click('#upload-form [type="submit"]');
+  await page.waitForFunction(() => document.querySelectorAll(".media-card").length === 2);
+  assert.match(await page.$eval("#upload-status", (node) => node.textContent), /2 files uploaded/);
+  await page.click(".media-open");
+  await page.waitForFunction(() => document.querySelector("#viewer-media img")?.naturalWidth > 0);
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(() => document.querySelector("#viewer-media video")?.readyState >= 1);
+  await page.$eval("#viewer-media video", (video) => video.play());
+  assert.equal(await page.$eval("#viewer-media video", (video) => video.paused), false);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => document.querySelector("#viewer-media").childElementCount === 0);
+  await page.click(".media-controls button");
+  await page.type('#caption-form [name="caption"]', '<img src=x onerror="alert(1)"> A tiny portrait');
+  await page.click('#caption-form [type="submit"]');
+  await page.waitForFunction(() => !document.querySelector("#caption-dialog").open);
+  assert.equal(await page.$(".media-card p img"), null);
+  assert.match(await page.$eval(".media-card p", (node) => node.textContent), /<img src=x/);
+
+  // Confirms a partially successful batch leaves just the rejected file selected for retry.
+  const invalidPath = path.join(dataDir, "unsupported.svg");
+  await writeFile(invalidPath, '<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+  await (await page.$("#upload-files")).uploadFile(imagePath, invalidPath);
+  await page.click('#upload-form [type="submit"]');
+  await page.waitForFunction(() => document.querySelector("#upload-status").textContent.includes("Only unfinished files remain selected"));
+  assert.equal(await page.$eval("#upload-files", (node) => node.files.length), 1);
+  assert.equal(await page.$$eval(".media-card", (nodes) => nodes.length), 3);
+  await page.click("#edit-set");
+  await page.$eval('#edit-form [name="title"]', (node) => { node.value = "The kingdom, collected"; });
+  await page.click('#edit-form [type="submit"]');
+  await page.waitForFunction(() => document.querySelector("#set-title").textContent === "The kingdom, collected");
+  await page.click("#back-to-sets");
+  await page.type("#search", "no matching collection");
+  await page.waitForSelector("#empty-state:not([hidden])");
+  assert.equal(await page.$eval("#empty-title", (node) => node.textContent), "No collections found");
+  await page.$eval("#search", (node) => { node.value = ""; node.dispatchEvent(new Event("input")); });
+  await page.click("#logout-button");
+  await page.waitForSelector("#login-button:not([hidden])");
+  await page.reload();
+  await page.waitForSelector(".collection-card");
+  assert.equal(await page.$eval("#manager", (node) => node.hidden), true);
+  const outputDir = path.join(root, "output", "gallery");
+  await mkdir(outputDir, { recursive: true });
+  await page.screenshot({ path: path.join(outputDir, "desktop-test.png"), fullPage: true });
+  await page.setViewport({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({ path: path.join(outputDir, "mobile-test.png"), fullPage: true });
+  await page.click(".collection-card");
+  await page.click(".media-open");
+  assert.equal(await page.evaluate(() => document.querySelector("#viewer").getBoundingClientRect().width <= innerWidth), true);
+  await page.keyboard.press("Escape");
+  await page.goto(`${origin}/`);
+  assert.equal(new URL(page.url()).pathname, "/gallery/");
+  assert.equal(await page.$eval('.gallery-header nav a[href="../"]', (node) => node.textContent), "Back to game");
+  assert.deepEqual(errors, []);
+  console.log("Browser checks passed: login, collections, real image/video upload and playback, partial retry, captions, editing, search, logout, mobile layout, root redirect.");
+} catch (error) {
+  console.error("Browser verification failed:", error);
+  process.exitCode = 1;
+} finally {
+  if (browser) await browser.close();
+  if (server) {
+    const closed = once(server, "close");
+    server.close();
+    server.closeAllConnections();
+    await closed;
+  }
+  const resolved = path.resolve(dataDir);
+  if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith("lidoll-gallery-browser-")) throw new Error("Unsafe browser-test cleanup path.");
+  await rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+}

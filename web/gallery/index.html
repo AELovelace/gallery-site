@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1a0611">
+  <meta name="description" content="Explore photo and video collections from LiDOLL.">
+  <title>Gallery // LiDOLL</title>
+  <script src="preferences.js"></script>
+  <link rel="stylesheet" href="theme.css">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#collections">Skip to collections</a>
+  <main class="gallery-shell">
+    <header class="gallery-header">
+      <a class="gallery-brand" href="../"><span class="brand-mark" aria-hidden="true">✦</span> LiDOLL</a>
+      <nav aria-label="Gallery navigation">
+        <a class="action" href="../">Back to game</a>
+        <button class="action" id="crt-toggle" type="button" aria-pressed="true">CRT FX // ON</button>
+        <button class="action primary" id="login-button" type="button">Log in</button>
+        <button class="action" id="logout-button" type="button" hidden>Log out</button>
+      </nav>
+    </header>
+
+    <section class="gallery-hero" aria-labelledby="gallery-title">
+      <div><p class="eyebrow">Chrysalis visual archive // 02</p>
+        <h1 id="gallery-title">THE GALLERY</h1>
+        <p class="hero-summary">Little moments. Whole collections.<br>Photos and films from the world of LiDOLL.</p>
+      </div>
+      <div class="archive-stamp" aria-hidden="true">✧<span>MEMORIES<br>ON DISPLAY</span></div>
+    </section>
+
+    <section class="manager rail-panel" id="manager" aria-labelledby="manager-title" hidden>
+      <div class="section-bar"><div><p class="eyebrow">Your archive</p><h2 id="manager-title">Manage collections</h2></div><button class="action primary" id="new-set" type="button">+ New set</button></div>
+      <p>Open a set to upload photos and videos, edit captions, or choose its cover. Saved changes are public.</p>
+    </section>
+
+    <section id="collections" aria-labelledby="collections-title">
+      <div class="section-bar collection-toolbar">
+        <div><p class="eyebrow">Browse the archive</p><h2 id="collections-title">All collections <span id="set-count" class="count"></span></h2></div>
+        <label class="search-label">Find a collection<input id="search" type="search" placeholder="Search collections…" maxlength="200"></label>
+      </div>
+      <p id="status" role="status" aria-live="polite">Opening the archive…</p>
+      <button class="action" id="retry" type="button" hidden>Try again</button>
+      <div class="collection-grid" id="collection-grid"></div>
+      <div class="empty-state rail-panel" id="empty-state" hidden><span aria-hidden="true">✧</span><h3 id="empty-title">A little space for memories</h3><p id="empty-description">The first collection is on its way. Come back soon.</p></div>
+    </section>
+
+    <section id="set-detail" class="rail-panel" aria-labelledby="set-title" hidden>
+      <div class="section-bar"><button class="action" id="back-to-sets" type="button">← All collections</button><div id="set-actions" hidden><button class="action" id="edit-set" type="button">Edit set</button> <button class="action danger" id="delete-set" type="button">Delete set</button></div></div>
+      <p class="eyebrow" id="set-meta"></p><h2 id="set-title" tabindex="-1"></h2><p id="set-description" class="preserve-lines"></p>
+      <form id="upload-form" class="upload-panel" hidden>
+        <label>Add photos &amp; videos<input id="upload-files" type="file" accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm" multiple required></label>
+        <p class="field-hint" id="upload-hint">JPG, PNG, GIF, WebP, MP4 or WebM. Choose several files to upload a set.</p>
+        <button class="action primary" type="submit">Upload to this set</button>
+        <progress id="upload-progress" max="100" value="0" hidden aria-label="Upload progress"></progress>
+        <p id="upload-status" role="status" aria-live="polite"></p>
+      </form>
+      <div class="media-grid" id="media-grid"></div>
+      <p id="media-empty" hidden>This set is waiting for its first photo or video.</p>
+    </section>
+
+    <footer class="gallery-footer"><span>LiDOLL // Visual archive</span><span>Photos, films &amp; a little magic ✦</span></footer>
+  </main>
+
+  <dialog id="login-dialog" class="form-dialog rail-panel" aria-labelledby="login-title">
+    <form id="login-form"><div class="section-bar"><h2 id="login-title">Welcome back</h2><button class="action" type="button" data-close>Close</button></div>
+      <p>Sign in to look after your collections.</p>
+      <label>Username<input name="username" autocomplete="username" required maxlength="100"></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
+      <p id="login-error" role="alert"></p><button class="action primary" type="submit">Log in</button>
+    </form>
+  </dialog>
+
+  <dialog id="edit-dialog" class="form-dialog rail-panel" aria-labelledby="edit-title">
+    <form id="edit-form"><div class="section-bar"><h2 id="edit-title">New set</h2><button class="action" type="button" data-close>Close</button></div>
+      <label>Title<input name="title" required maxlength="120"></label>
+      <label>Description<textarea name="description" rows="4" maxlength="2000"></textarea></label>
+      <p id="edit-error" role="alert"></p><button class="action primary" type="submit">Save set</button>
+    </form>
+  </dialog>
+
+  <dialog id="caption-dialog" class="form-dialog rail-panel" aria-labelledby="caption-title">
+    <form id="caption-form"><div class="section-bar"><h2 id="caption-title">Edit caption</h2><button class="action" type="button" data-close>Close</button></div>
+      <label>Caption / image description<textarea name="caption" rows="4" maxlength="500"></textarea></label>
+      <p class="field-hint">Describe the photo for visitors who use a screen reader.</p>
+      <p id="caption-error" role="alert"></p><button class="action primary" type="submit">Save caption</button>
+    </form>
+  </dialog>
+
+  <dialog id="viewer" class="viewer" aria-label="Media viewer">
+    <div class="viewer-toolbar"><p id="viewer-counter"></p><button class="action" type="button" data-close>Close ✕</button></div>
+    <div id="viewer-media"></div><p id="viewer-caption" class="preserve-lines"></p>
+    <div class="viewer-navigation"><button class="action" id="previous-media" type="button">← Previous</button><button class="action" id="next-media" type="button">Next →</button></div>
+  </dialog>
+  <noscript><p class="rail-panel">Please enable JavaScript to browse the gallery and manage uploads.</p></noscript>
+</body>
+</html>
