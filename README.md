@@ -2,7 +2,7 @@
 
 An independent photo/video gallery for **https://lidoll.dev/gallery/**, styled
 to match the main LiDOLL site. The owner can log in, manage collections, upload
-multiple files, edit captions, and choose covers. Previews are public; originals require LiDollID sign-in.
+multiple files, edit captions, and choose covers. Photo previews and video playback are public; full-size photos and downloads require LiDollID sign-in.
 
 **Fedora deployment:** follow [FEDORA.md](FEDORA.md). The prepared layout is:
 
@@ -86,17 +86,19 @@ keep their saved limit: set `GALLERY_MAX_UPLOAD_MB=1024` in
 `client_max_body_size 1024m;` before validating/reloading nginx. Refresh the
 gallery page to fetch the new limit. Alternatively, deploy with
 `--max-upload-mb 1024` and copy the installed nginx snippet to the proxy.
-Videos need browser-playable codecs for full playback. Public image previews are re-encoded as WebP, at most 480 by 480, with metadata stripped. Public video previews are single still frames generated with ffmpeg and resized by sharp. Existing uploads gain previews lazily; failed/unsupported decodes show a placeholder and never expose the original. Preview files live in the private data directory. These public previews can themselves be saved by visitors.
+Videos need browser-playable codecs for full playback. Public image previews are re-encoded as WebP, at most 480 by 480, with metadata stripped. Public video thumbnails are single still frames generated with ffmpeg and resized by sharp. Existing uploads gain previews lazily; failed/unsupported preview decodes show a placeholder without falling back to original bytes on the preview route. Preview files live in the private data directory. These public previews can themselves be saved by visitors.
+
+Anyone can open and play videos without signing in, including seeking. The gallery download action requires sign-in, and signed-out video controls request that the browser hide its native download button. This is not copy protection: public playback delivers the video bytes, which visitors can save using browser tools or recording. No new environment setting or database migration is needed for public video playback; deploy the updated backend and frontend together.
 
 ## LiDollID accounts and permissions
 
 Sign-in and registration are available in the gallery. Register the public client **lidoll-gallery** with the exact callback **https://lidoll.dev/gallery/auth/callback** and token endpoint authentication method **none**. The default issuer is **https://auth.sadgirlsclub.wtf**. Full setup and the one-time **lidoll** owner migration are in [FEDORA.md](FEDORA.md#lidollid-registration-and-owner-migration).
 
-- Viewers can browse, like and download originals after signing in.
+- Anyone can browse photo previews and watch videos. Viewers can also like, view full-size photos and download originals after signing in.
 - Contributors can create collections and upload, caption, change covers, or delete content in their own collections.
 - The owner can manage every collection and open **Users** to grant/revoke contributor permission or disable gallery access. Accounts appear after their first gallery login. Search and pagination support larger member lists. Disabling an account revokes gallery sessions; it does not disable the shared LiDollID account or delete content. The owner cannot be disabled/demoted from this panel.
 
-Original media, downloads, HEAD and byte-range requests require a current enabled account. They are served with private, no-store caching. The same upload restrictions apply to all contributors. Permission checks happen again before an upload commits, so revoking access during an upload takes effect. Owner migration uses the identity database's permanent subject, never a display-name match. Existing collections are retained and assigned to the owner.
+Full-size photos and all download routes require a current enabled account, including HEAD and byte-range requests. Video playback routes accept public GET, HEAD and byte-range requests. Both use private, no-store caching. Disabled accounts retain the same public photo previews and video playback as anonymous visitors. The same upload restrictions apply to all contributors. Permission checks happen again before an upload commits, so revoking access during an upload takes effect. Owner migration uses the identity database's permanent subject, never a display-name match. Existing collections are retained and assigned to the owner.
 
 ## Views and likes
 

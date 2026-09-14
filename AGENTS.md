@@ -11,7 +11,7 @@ login, collection API, and uploaded data independent of the game/editor.
   storage behavior. Use `textContent` for user-authored titles and captions.
 - Content management requires LiDollID authentication, posting permission, collection ownership (or owner role), same-origin checks and CSRF.
   Public views accept anonymous sessions with signed visitor cookies. Likes require LiDollID and are account-scoped.
-  Original media and downloads require a live enabled account; only reduced still previews are public.
+  Full-size photos and download routes require a live enabled account; reduced still previews and video playback (including HEAD/ranges) are public.
   Management/reaction mutations must enforce same-origin and CSRF checks.
   Keep credentials, uploads and SQLite outside the public web directory and Git.
 - Put Python scripts in `python/`, PowerShell scripts in `ps/`, and Fedora Bash

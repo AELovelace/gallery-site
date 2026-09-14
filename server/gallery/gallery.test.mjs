@@ -117,6 +117,54 @@ test("owner login, public collections, uploads, edits, restart persistence and d
   assert.deepEqual(await readdir(path.join(app.dataDir, "uploads")), []);
 });
 
+test("public MP4 and WebM playback supports seeking while downloads and original photos require an enabled account", async (t) => {
+  const app = await fixture(t), owner = app.client(), visitor = app.client(), reader = app.client();
+  await owner.login();
+  const member = await reader.login("reader");
+  const set = (await owner.request("/gallery/api/sets", { method: "POST", body: { title: "Public films" } })).data.id;
+  const photo = (await owner.request(`/gallery/api/sets/${set}/items`, { method: "POST", raw: true, body: png })).data.id;
+  const videos = [];
+  for (const [type, signature] of [["video/mp4", "000000186674797069736f6d0000020069736f6d69736f32"], ["video/webm", "1a45dfa37765626d0000000000"]]) {
+    const bytes = Buffer.concat([Buffer.from(signature, "hex"), Buffer.alloc(100)]);
+    const upload = await owner.request(`/gallery/api/sets/${set}/items`, { method: "POST", raw: true, body: bytes });
+    assert.equal(upload.status, 201);
+    const media = `/gallery/media/${upload.data.id}`, download = `/gallery/download/${upload.data.id}`;
+    videos.push({ media, download });
+    const playback = await visitor.request(media); // Exercises playback without even creating a visitor or login session.
+    assert.equal(playback.status, 200);
+    assert.equal(playback.headers.get("content-type"), type);
+    assert.equal(playback.headers.get("content-disposition"), null);
+    assert.equal(playback.headers.get("cache-control"), "private, no-store");
+    assert.deepEqual(playback.bytes, bytes);
+    const head = await visitor.request(media, { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(Number(head.headers.get("content-length")), bytes.length);
+    assert.equal(head.bytes.length, 0);
+    for (const [range, start, end] of [["bytes=4-11", 4, 11], ["bytes=-8", bytes.length - 8, bytes.length - 1]]) {
+      const part = await visitor.request(media, { headers: { Range: range } });
+      assert.equal(part.status, 206);
+      assert.equal(part.headers.get("content-range"), `bytes ${start}-${end}/${bytes.length}`);
+      assert.deepEqual(part.bytes, bytes.subarray(start, end + 1));
+    }
+    assert.equal((await visitor.request(media, { headers: { Range: "bytes=9999-" } })).status, 416);
+    const saved = await reader.request(download);
+    assert.equal(saved.status, 200);
+    assert.match(saved.headers.get("content-disposition"), /^attachment;/);
+    assert.deepEqual(saved.bytes, bytes);
+  }
+  await owner.request(`/gallery/api/users/${member.user.id}`, { method: "PATCH", body: { role: "viewer", disabled: true } });
+  for (const client of [visitor, reader]) {
+    for (const options of [{}, { method: "HEAD" }, { headers: { Range: "bytes=0-2" } }]) {
+      assert.equal((await client.request(`/gallery/media/${photo}`, options)).status, 401);
+      assert.equal((await client.request(`/gallery/download/${photo}`, options)).status, 401);
+      for (const video of videos) assert.equal((await client.request(video.download, options)).status, 401);
+    } // Anonymous and revoked sessions cannot use HEAD or Range to bypass download/photo authentication.
+    for (const video of videos) assert.equal((await client.request(video.media)).status, 200);
+  }
+  const items = (await visitor.request("/gallery/api/sets")).data.sets[0].items;
+  assert.ok(items.every(item => item.views === 0)); // Streaming and seeking alone never inflate view counts.
+});
+
 test("anonymous mutations, cross-origin requests, bad CSRF, logout and expired sessions are rejected", async (t) => {
   const app = await fixture(t);
   const client = app.client();

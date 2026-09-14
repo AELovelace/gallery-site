@@ -132,6 +132,25 @@ try {
   await page.waitForSelector('#preview-notice:not([hidden])');
   assert.equal(await page.$('#viewer-media video'),null);
   assert.match(await page.$eval('#viewer-media img',node=>node.getAttribute('src')),/\/preview\//);
+  await page.keyboard.press('ArrowRight');
+  await page.waitForFunction(() => document.querySelector('#viewer-media video')?.readyState >= 2);
+  assert.equal(await page.$eval('#preview-notice', node => node.hidden), true);
+  assert.equal(await page.$eval('#viewer-media video', video => video.controlsList.contains('nodownload')), true);
+  assert.equal(await page.$eval('#download-media', node => node.textContent), 'Sign in to download');
+  await page.$eval('#viewer-media video', video => video.play());
+  await page.waitForFunction(() => document.querySelector('#viewer-media video').currentTime > 0);
+  await page.$eval('#viewer-media video', video => { video.pause(); video.currentTime = 0.2; });
+  await page.waitForFunction(() => {
+    const video = document.querySelector('#viewer-media video');
+    return !video.seeking && Math.abs(video.currentTime - 0.2) < 0.05;
+  }); // Checks actual signed-out decoding, playback and seeking instead of only the presence of a video element.
+  assert.equal(await page.$eval('#viewer-media video', async video => {
+    const response = await fetch(video.getAttribute('src').replace('/media/', '/download/'));
+    return response.status;
+  }), 401);
+  await page.click('#download-media');
+  await page.waitForSelector('#login-dialog[open]');
+  await page.keyboard.press('Escape');
   await page.keyboard.press('Escape');
   await page.click('#back-to-sets');
   await page.click(".collection-card .like-button");
@@ -208,7 +227,7 @@ try {
   assert.equal(await page.evaluate(()=>document.querySelector('#users-dialog').scrollWidth<=document.querySelector('#users-dialog').clientWidth),true);
   await page.screenshot({path:path.join(outputDir,'users-mobile-test.png'),fullPage:true});
   assert.deepEqual(errors, []);
-  console.log("Browser checks passed: MP4/WebM previews, video collection covers, idle viewer posters, preview failure fallback, login, uploads, playback, partial retry, captions, editing, search, logout, LiDollID login, public previews, protected originals, owner user management, account likes, persistent reactions, deduplicated views, mobile layout, root redirect.");
+  console.log("Browser checks passed: MP4/WebM previews, video collection covers, idle viewer posters, preview failure fallback, login, uploads, public video playback and seeking, protected downloads and full-size photos, partial retry, captions, editing, search, logout, LiDollID login, public previews, owner user management, account likes, persistent reactions, deduplicated views, mobile layout, root redirect.");
 } catch (error) {
   console.error("Browser verification failed:", error);
   process.exitCode = 1;

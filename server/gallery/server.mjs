@@ -194,7 +194,7 @@ export function createGalleryServer(options = {}) {
             if (!preview) { response.writeHead(200, { "Content-Type": "image/svg+xml", "Cache-Control": "no-store" }); response.end(method === "HEAD" ? undefined : '<svg xmlns="http://www.w3.org/2000/svg" width="480" height="320"><rect width="100%" height="100%" fill="#370f2d"/><text x="50%" y="50%" text-anchor="middle" fill="#ffb3d4" font-size="20">Preview unavailable</text></svg>'); return; }
             await sendFile(request, response, preview, "image/webp"); return;
           }
-          requireUser(request); // Original bytes, HEAD and range requests all require a live account, including guessed URLs.
+          if (mode === "download" || item.kind !== "video") requireUser(request); // Public videos support playback and seeking; downloads and full-size photos still require a live account.
           response.setHeader("Cache-Control", "private, no-store");
           if (mode === "download") response.setHeader("Content-Disposition", 'attachment; filename="gallery-' + item.id + path.extname(item.filename) + '"');
           await sendFile(request, response, path.join(dataDir, "uploads", item.filename), MIME[path.extname(item.filename)]);

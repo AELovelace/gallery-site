@@ -96,13 +96,14 @@ function setAccount(account) { // Separates account access, posting permission a
 }
 
 function mediaElement(item, full = false) {
-  const original = full && state.authenticated;
+  const original = full && (item.kind === "video" || state.authenticated); // Opens public video players while keeping signed-out photos on reduced previews.
   const media = element(item.kind === "video" && original ? "video" : "img");
   media.src = original ? item.url : item.preview_url;
   if (item.kind === "video" && original) {
     media.controls = full;
     media.preload = full ? "metadata" : "none"; // Avoids downloading every video while browsing a collection.
     media.playsInline = true;
+    if (!state.authenticated) media.setAttribute("controlsList", "nodownload"); // Hides the native download action where supported; playback bytes can still be saved outside these controls.
     media.setAttribute("aria-label", item.caption || "Video");
     if (full) videoPreviews.watch(media, item.url, true);
   } else {
@@ -231,8 +232,8 @@ function showViewer(index) {
   $("#viewer-counter").textContent = `${state.viewerIndex + 1} / ${items.length}`;
   $("#viewer-engagement").replaceChildren(engagementBar("items", item));
   $("#download-media").href = state.authenticated ? item.download_url : "auth/login";
-  $("#download-media").textContent = state.authenticated ? "Download original" : "Sign in for the original";
-  $("#preview-notice").hidden = state.authenticated;
+  $("#download-media").textContent = state.authenticated ? "Download original" : "Sign in to download";
+  $("#preview-notice").hidden = state.authenticated || item.kind === "video";
   $("#previous-media").disabled = $("#next-media").disabled = items.length < 2;
   if (!$("#viewer").open) $("#viewer").showModal();
   sendEngagement("items", item.id, "view"); // Thumbnails and video range requests do not count as opens.
@@ -253,7 +254,7 @@ async function initialize() {
     const session = await api("session");
     state.csrf = session.csrf;
     setAccount(session);
-    $("#upload-hint").textContent = `JPG, PNG, GIF, WebP, MP4 or WebM. Up to ${session.max_upload_mb} MB per file. Previews are public; originals require LiDollID sign-in.`;
+    $("#upload-hint").textContent = `JPG, PNG, GIF, WebP, MP4 or WebM. Up to ${session.max_upload_mb} MB per file. Photo previews and video playback are public; full-size photos and downloads require LiDollID sign-in.`;
     await refresh();
   } catch (error) {
     $("#status").textContent = error.message;

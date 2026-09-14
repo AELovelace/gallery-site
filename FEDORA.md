@@ -222,11 +222,11 @@ photos and a video, then check playback/seeking, captions and cover selection.
 MP4/WebM thumbnails should show a still frame with a play overlay. Select a
 video as the collection cover and check its preview in the collection list.
 Opening a video should show its poster before playing from the beginning.
-Verify a signed-out window sees only previews and has no editing controls.
+Verify a signed-out window sees reduced photo previews, can play and seek videos, and has no editing controls. Video viewers should offer sign-in for downloads and hide the native download button where the browser supports it.
 Try a larger video through nginx to validate the real proxy limits. Test the
 main index link, mobile layout, and logout. Like a collection and a media item
 while signed in, refresh to confirm the likes persist, then remove a like.
-Signed-out like/download actions must offer LiDollID sign-in and registration; direct original-media URLs must return 401. Grant a test member Contributor access from Users, verify they can post only to their own sets, then revoke access.
+Signed-out like/download actions must offer LiDollID sign-in and registration. Direct full-size photo URLs and all download URLs must return 401, including HEAD/range requests; video playback URLs must return 200 (206 for valid ranges). Grant a test member Contributor access from Users, verify they can post only to their own sets, then revoke access.
 Open the same collection/media repeatedly: its view count should increase only
 once for that browser per UTC day. Check that video playback continues when liked.
 
@@ -279,7 +279,9 @@ database migrations performed by new code or restore a data backup. Inspect
 recovery directories are retained for inspection and can be removed manually
 after verifying the update; they contain application files, not a data backup.
 
-Public previews now require sharp and ffmpeg on the server. Deploy the complete release; original media routes enforce LiDollID authentication even when a visitor knows an old URL. Existing videos are processed lazily. A missing codec produces a placeholder, never a public original. Fedora ffmpeg-free supports the codecs shipped by Fedora; use an existing compatible ffmpeg build for other formats.
+Public previews require sharp and ffmpeg on the server. Deploy the complete release; full-size photo and download routes enforce LiDollID authentication even when a visitor knows an old URL. Video playback is public. Existing video thumbnails are processed lazily. A missing preview codec produces a placeholder without falling back to original bytes on the preview route. Fedora ffmpeg-free supports the codecs shipped by Fedora; use an existing compatible ffmpeg build for other formats.
+
+The public video playback update needs no new environment settings, database migration or nginx changes when the existing proxy forwards all `/gallery/` requests. Deploy the backend and frontend together with the updater, or install the refreshed release archive. Playback exposes the video bytes: the sign-in requirement protects the gallery download action, but cannot prevent saving public streams using browser tools or recording.
 
 For release archives or installation/configuration changes, use the installer
 from a separate extracted folder or checkout. It restarts the app and preserves `/var/lib/lidoll-gallery` and the
@@ -429,6 +431,6 @@ sudo systemctl start lidoll-gallery
 
 The root invocation can read both private databases; it writes only the gallery database. Restoring ownership afterward keeps the service writable. This is idempotent for the same permanent account. Do not substitute lid0ll unless that is the intended account: the username lookup is exact.
 
-4. Open **https://lidoll.dev/gallery/** and sign in as **lidoll**. Existing collections are yours. Open **Users**; after another person signs in to the gallery, select **Contributor (can post)** and **Save access** to grant posting, or return them to Viewer to revoke it. Disabled gallery accounts cannot like, read originals, download or post; public previews remain public.
+4. Open **https://lidoll.dev/gallery/** and sign in as **lidoll**. Existing collections are yours. Open **Users**; after another person signs in to the gallery, select **Contributor (can post)** and **Save access** to grant posting, or return them to Viewer to revoke it. Disabled gallery accounts cannot like, view full-size photos, download through the download route or post; photo previews and video playback remain public.
 
 The deployment requires Node 24.9+, [nodejs24-npm](https://packages.fedoraproject.org/pkgs/nodejs24/nodejs24-npm/), and [ffmpeg-free](https://packages.fedoraproject.org/pkgs/ffmpeg/ffmpeg-free/) or an existing compatible ffmpeg. npm runs with install scripts disabled; sharp's platform binaries come from the lockfile's optional packages. Browser tests use a local signed OIDC issuer and do not contact live LiDollID.
