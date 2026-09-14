@@ -14,3 +14,7 @@ web/gallery/preferences.js
 web/gallery/video-previews.js
 web/gallery/style.css
 web/gallery/theme.css
+package-lock.json
+server/gallery/identity.mjs
+server/gallery/previews.mjs
+server/gallery/test-identity.mjs

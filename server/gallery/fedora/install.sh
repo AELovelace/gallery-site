@@ -15,7 +15,7 @@ PORT in /etc/lidoll-gallery.env, or use 8787 for a new installation.
 Use --max-upload-mb to set a per-file limit (1-2048 MiB). Otherwise preserve
 GALLERY_MAX_UPLOAD_MB, or use 1024 (1 GiB) for a new installation.
 
-Requires running firewalld and an interactive terminal for first owner setup.
+Requires running firewalld. Bind the LiDollID owner using the migration commands in FEDORA.md.
 Uses existing /usr/bin/node-24 (24.9+); installs nodejs24 only if that binary is absent.
 Preserves credentials, uploads, database, and environment settings except explicit port/upload-limit changes.
 Configure the separate nginx proxy using FEDORA.md after installation.
@@ -94,9 +94,6 @@ if [[ -z $gallery_zone ]]; then gallery_zone=$gallery_actual_zone; fi
 [[ $gallery_zone == "$gallery_actual_zone" ]] || die "Interface $gallery_interface uses zone $gallery_actual_zone; rerun with --zone $gallery_actual_zone."
 firewall-cmd --zone="$gallery_zone" --list-all >/dev/null
 firewall-cmd --permanent --zone="$gallery_zone" --list-all >/dev/null # Requires the zone to exist for both immediate and reboot-persistent rules.
-if [[ ! -f $gallery_data/admin.json && ! -t 0 ]]; then
-  die 'First installation needs an interactive terminal for owner username/password setup. Rerun from a terminal.'
-fi
 gallery_service_pid=$(systemctl show --property=MainPID --value lidoll-gallery 2>/dev/null || true)
 gallery_listeners=$(ss -H -ltnp "sport = :$gallery_port")
 while IFS= read -r gallery_listener; do
@@ -113,6 +110,8 @@ for gallery_package in firewalld policycoreutils shadow-utils util-linux iproute
   fi
 done # Requests only missing deployment dependencies instead of upgrading already installed packages.
 if [[ ! -x $gallery_node ]]; then gallery_missing_packages+=(nodejs24); fi
+if [[ ! -f /usr/lib/node_modules_24/npm/bin/npm-cli.js ]]; then gallery_missing_packages+=(nodejs24-npm); fi
+if ! command -v ffmpeg >/dev/null; then gallery_missing_packages+=(ffmpeg-free); fi
 if [[ ${#gallery_missing_packages[@]} -gt 0 ]]; then
   dnf --refresh install -y "${gallery_missing_packages[@]}"
 fi # Keeps an existing versioned Node runtime and leaves runtime upgrades to the host administrator.
@@ -169,12 +168,12 @@ sed -i -E "s|client_max_body_size [0-9]+m;|client_max_body_size ${gallery_upload
 install -o root -g root -m 0644 "$gallery_source/server/gallery/lidoll-gallery.service" /etc/systemd/system/lidoll-gallery.service
 restorecon -RF "$gallery_app" "$gallery_data" /etc/lidoll-gallery.env /etc/systemd/system/lidoll-gallery.service # Applies Fedora's normal SELinux labels without disabling enforcement.
 
-cd -- "$gallery_app" # Gives tests and owner setup an accessible working directory before switching to the service account.
+cd -- "$gallery_app" # Gives tests an accessible working directory before switching to the service account.
+"$gallery_node" /usr/lib/node_modules_24/npm/bin/npm-cli.js ci --omit=dev --ignore-scripts --no-audit --no-fund # Uses pinned runtime dependencies without running dependency install scripts.
+chmod -R a+rX "$gallery_app/node_modules" # Ensures a restrictive operator umask cannot make runtime packages unreadable to the service.
+restorecon -RF "$gallery_app"
 runuser -u lidoll-gallery -- "$gallery_node" --test "$gallery_app/server/gallery/gallery.test.mjs"
-if [[ ! -f $gallery_data/admin.json ]]; then
-  [[ -t 0 ]] || die 'First installation needs an interactive terminal for owner username/password setup. Rerun from a terminal.'
-  runuser -u lidoll-gallery -- env GALLERY_DATA_DIR="$gallery_data" "$gallery_node" "$gallery_app/server/gallery/setup.mjs"
-fi
+printf "Bind your LiDollID owner after installation using FEDORA.md. Password login is no longer enabled.\n"
 
 # Negative priorities run before normal open-port/service rules; only this backend address and port are affected.
 gallery_allow='rule family="ipv4" priority="-100" source address="10.1.1.20/32" destination address="10.1.1.23/32" port port="8787" protocol="tcp" accept'

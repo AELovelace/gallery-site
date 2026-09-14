@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import { createServer } from "node:net";
 import puppeteer from "puppeteer";
+import { DatabaseSync } from "node:sqlite";
+import { testIdentity } from "./test-identity.mjs";
+import { bindOwner } from "./identity.mjs";
 import { createGalleryServer, passwordRecord } from "./server.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -16,15 +19,17 @@ await once(probe, "listening");
 const port = Number(process.env.GALLERY_TEST_PORT || probe.address().port);
 await new Promise((resolve) => probe.close(resolve)); // Selects an available ephemeral port outside Windows' excluded service ranges.
 const origin = `http://127.0.0.1:${port}`;
+const identity=await testIdentity();
 let browser;
 let server;
 try {
   await writeFile(path.join(dataDir, "admin.json"), JSON.stringify(await passwordRecord("doll", "browser-test-password")));
-  server = createGalleryServer({ dataDir, origin, maxUploadMB: 1 });
+  server = createGalleryServer({ dataDir, origin, maxUploadMB: 1, issuer: identity.issuer });
+  const db=new DatabaseSync(path.join(dataDir,"gallery.sqlite")); bindOwner(db,identity.issuer,"subject-lidoll","lidoll"); db.close();
   server.listen(port, "127.0.0.1");
   await once(server, "listening");
   console.log("Starting Chromium for gallery verification…");
-  browser = await puppeteer.launch({ headless: true, pipe: true });
+  browser = await puppeteer.launch({ headless: true, pipe: true, executablePath: process.env.CHROME_PATH || undefined });
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -36,9 +41,7 @@ try {
   assert.equal(await page.$eval("#manager", (node) => node.hidden), true);
   assert.equal(await page.$eval("#crt-toggle", (node) => node.getAttribute("aria-pressed")), "false");
   await page.click("#login-button");
-  await page.type('#login-form [name="username"]', "doll");
-  await page.type('#login-form [name="password"]', "browser-test-password");
-  await page.click('#login-form [type="submit"]');
+  await page.click('#login-dialog a[href="auth/login"]');
   await page.waitForSelector("#manager:not([hidden])");
   await page.click("#new-set");
   await page.type('#edit-form [name="title"]', "Scenes from the kingdom");
@@ -79,7 +82,7 @@ try {
   await page.click('#upload-form [type="submit"]');
   await page.waitForFunction(() => document.querySelectorAll(".media-card").length === 2);
   assert.match(await page.$eval("#upload-status", (node) => node.textContent), /2 files uploaded/);
-  await page.waitForFunction(() => document.querySelector(".media-card:nth-child(2) .video-preview.preview-ready")?.naturalWidth > 0);
+  await page.waitForFunction(() => document.querySelector(".media-card:nth-child(2) .cover img")?.naturalWidth > 0);
   assert.equal(await page.$("#media-grid video"), null); // Thumbnails are still pictures, with no embedded autoplaying players.
   assert.equal(await page.$eval(".media-card:nth-child(2) .view-count", (node) => node.textContent), "0 views");
   await page.click(".media-open");
@@ -122,8 +125,22 @@ try {
   await page.waitForSelector("#login-button:not([hidden])");
   await page.reload();
   await page.waitForSelector(".collection-card");
-  await page.waitForFunction(() => document.querySelector(".collection-card .video-preview.preview-ready")?.naturalWidth > 0); // Existing MP4 uploads regenerate previews for signed-out visitors after a reload.
+  await page.waitForFunction(() => document.querySelector(".collection-card .cover img")?.naturalWidth > 0); // Existing MP4 uploads regenerate previews for signed-out visitors after a reload.
   assert.equal(await page.$eval("#manager", (node) => node.hidden), true);
+  await page.click('.collection-open');
+  await page.click('.media-open');
+  await page.waitForSelector('#preview-notice:not([hidden])');
+  assert.equal(await page.$('#viewer-media video'),null);
+  assert.match(await page.$eval('#viewer-media img',node=>node.getAttribute('src')),/\/preview\//);
+  await page.keyboard.press('Escape');
+  await page.click('#back-to-sets');
+  await page.click(".collection-card .like-button");
+  await page.waitForSelector('#login-dialog[open]');
+  assert.ok(await page.$('#login-dialog a[href="auth/register"]'));
+  identity.user='reader';
+  await page.click('#login-dialog a[href="auth/login"]');
+  await page.waitForSelector('#logout-button:not([hidden])');
+  assert.equal(await page.$eval('#manager',node=>node.hidden),true);
   await page.click(".collection-card .like-button");
   await page.waitForSelector('.collection-card .like-button[aria-pressed="true"]:not(:disabled)');
   assert.equal(await page.$eval("#set-detail", (node) => node.hidden), true); // Liking a collection must not also open its separate navigation button.
@@ -178,13 +195,26 @@ try {
   });
   await page.waitForSelector('#failed-preview-check img[data-preview-state="unavailable"]');
   assert.ok(await page.$("#failed-preview-check .video-play")); // A missing or undecodable video keeps its play affordance without breaking the gallery.
+  await page.click('#logout-button');
+  await page.waitForSelector('#login-button:not([hidden])');
+  identity.user='lidoll';
+  await page.click('#login-button');await page.click('#login-dialog a[href="auth/login"]');
+  await page.waitForSelector('#users-button:not([hidden])');await page.click('#users-button');
+  await page.waitForSelector('.user-row');
+  await page.type('#users-search','reader');await page.click('#users-search-form button');
+  await page.waitForFunction(()=>document.querySelectorAll('.user-row').length===1&&document.querySelector('.user-row strong').textContent==='reader');
+  await page.select('.user-row select','contributor');await page.click('.user-row button');
+  await page.waitForFunction(()=>document.querySelector('.user-row select').value==='contributor'&&!document.querySelector('.user-row button').disabled);
+  assert.equal(await page.evaluate(()=>document.querySelector('#users-dialog').scrollWidth<=document.querySelector('#users-dialog').clientWidth),true);
+  await page.screenshot({path:path.join(outputDir,'users-mobile-test.png'),fullPage:true});
   assert.deepEqual(errors, []);
-  console.log("Browser checks passed: MP4/WebM previews, video collection covers, idle viewer posters, preview failure fallback, login, uploads, playback, partial retry, captions, editing, search, logout, public likes, persistent reactions, deduplicated views, mobile layout, root redirect.");
+  console.log("Browser checks passed: MP4/WebM previews, video collection covers, idle viewer posters, preview failure fallback, login, uploads, playback, partial retry, captions, editing, search, logout, LiDollID login, public previews, protected originals, owner user management, account likes, persistent reactions, deduplicated views, mobile layout, root redirect.");
 } catch (error) {
   console.error("Browser verification failed:", error);
   process.exitCode = 1;
 } finally {
   if (browser) await browser.close();
+  await identity.close();
   if (server) {
     const closed = once(server, "close");
     server.close();

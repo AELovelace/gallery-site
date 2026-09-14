@@ -20,10 +20,12 @@
       <nav aria-label="Gallery navigation">
         <a class="action" href="../">Back to game</a>
         <button class="action" id="crt-toggle" type="button" aria-pressed="true">CRT FX // ON</button>
-        <button class="action primary" id="login-button" type="button">Log in</button>
+        <button class="action primary" id="login-button" type="button">Sign in with LiDollID</button>
+        <button class="action" id="users-button" type="button" hidden>Users</button>
         <button class="action" id="logout-button" type="button" hidden>Log out</button>
       </nav>
     </header>
+    <p id="account-label" class="field-hint" role="status"></p>
 
     <section class="gallery-hero" aria-labelledby="gallery-title">
       <div><p class="eyebrow">Chrysalis visual archive // 02</p>
@@ -35,7 +37,7 @@
 
     <section class="manager rail-panel" id="manager" aria-labelledby="manager-title" hidden>
       <div class="section-bar"><div><p class="eyebrow">Your archive</p><h2 id="manager-title">Manage collections</h2></div><button class="action primary" id="new-set" type="button">+ New set</button></div>
-      <p>Open a set to upload photos and videos, edit captions, or choose its cover. Saved changes are public.</p>
+      <p>Open a set to upload photos and videos, edit captions, or choose its cover. Collection details and previews are public. Originals are available to signed-in members.</p>
     </section>
 
     <section id="collections" aria-labelledby="collections-title">
@@ -67,13 +69,18 @@
     <footer class="gallery-footer"><span>LiDOLL // Visual archive</span><span>Photos, films &amp; a little magic ✦</span></footer>
   </main>
 
-  <dialog id="login-dialog" class="form-dialog rail-panel" aria-labelledby="login-title">
-    <form id="login-form"><div class="section-bar"><h2 id="login-title">Welcome back</h2><button class="action" type="button" data-close>Close</button></div>
-      <p>Sign in to look after your collections.</p>
-      <label>Username<input name="username" autocomplete="username" required maxlength="100"></label>
-      <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
-      <p id="login-error" role="alert"></p><button class="action primary" type="submit">Log in</button>
-    </form>
+<dialog id="login-dialog" class="form-dialog rail-panel" aria-labelledby="login-title">
+    <div class="section-bar"><h2 id="login-title">Join the gallery</h2><button class="action" type="button" data-close>Close</button></div>
+    <p>Sign in with LiDollID to like collections and download original photos and videos.</p>
+    <p><a class="action primary" href="auth/login">Sign in with LiDollID</a></p>
+    <p><a class="action" href="auth/register">Register for LiDollID</a></p>
+  </dialog>
+  <dialog id="users-dialog" class="rail-panel users-dialog" aria-labelledby="users-title">
+    <div class="section-bar"><h2 id="users-title">User management</h2><button class="action" type="button" data-close>Close</button></div>
+    <p>Members appear here after their first gallery sign-in. Contributors can post photos and videos in their own collections. Disabling access ends their gallery sessions.</p>
+    <form id="users-search-form"><label>Find an account<input id="users-search" type="search" maxlength="100"></label><button class="action" type="submit">Search</button></form>
+    <p id="users-error" role="alert"></p><div id="users-list"></div>
+    <div class="section-bar"><button id="users-prev" class="action" type="button">Previous</button><span id="users-page" role="status"></span><button id="users-next" class="action" type="button">Next</button></div>
   </dialog>
 
   <dialog id="edit-dialog" class="form-dialog rail-panel" aria-labelledby="edit-title">
@@ -95,6 +102,8 @@
   <dialog id="viewer" class="viewer" aria-label="Media viewer">
     <div class="viewer-toolbar"><p id="viewer-counter"></p><button class="action" type="button" data-close>Close ✕</button></div>
     <div id="viewer-media"></div><p id="viewer-caption" class="preserve-lines"></p>
+    <p id="preview-notice">Public preview. Sign in to view the full-size photo or play the video.</p>
+    <a id="download-media" class="action" href="auth/login">Sign in for the original</a>
     <div id="viewer-engagement"></div>
     <div class="viewer-navigation"><button class="action" id="previous-media" type="button">← Previous</button><button class="action" id="next-media" type="button">Next →</button></div>
   </dialog>

@@ -42,6 +42,7 @@ class UpdateTests(unittest.TestCase):
         script = script.replace("gallery_node=/usr/bin/node-24", 'gallery_node="$GALLERY_TEST_NODE"')
         script = script.replace("9>/run/lock/lidoll-gallery-deploy.lock", '9>"$GALLERY_TEST_ROOT/deploy.lock"')
         script = script.replace("mktemp -d /opt/.lidoll-gallery-update.XXXXXX", 'mktemp -d "$GALLERY_TEST_ROOT/opt/.lidoll-gallery-update.XXXXXX"')
+        script = script.replace("/usr/lib/node_modules_24/npm/bin/npm-cli.js", '"$GALLERY_TEST_NPM"')
         updater = self.seed / "server/gallery/fedora/update.sh"
         updater.parent.mkdir(parents=True, exist_ok=True)
         updater.write_text(script + "\n", newline="\n")  # Redirects fixed host paths and privilege checks only in the disposable fixture.
@@ -81,6 +82,15 @@ else exec "$GALLERY_REAL_GIT" "$@"; fi''',
             executable.chmod(0o755)
         self.env = os.environ.copy()
         self.env.update(GALLERY_TEST_ROOT=self.root.as_posix(), GALLERY_TEST_NODE=Path(NODE).as_posix(), GALLERY_REAL_GIT=Path(GIT).as_posix())
+        npm_stub = self.root / "npm-stub.cjs"
+        npm_stub.write_text("""const fs=require('node:fs'),path=require('node:path');
+if(!process.argv.includes('--omit=dev')||!process.argv.includes('--ignore-scripts'))process.exit(1);
+for(const name of ['openid-client','oauth4webapi','jose','sharp','@img','@emnapi','detect-libc','semver','tslib']) {
+ const source=path.join(process.env.GALLERY_TEST_MODULES,name);
+ if(fs.existsSync(source))fs.cpSync(source,path.join(process.cwd(),'node_modules',name),{recursive:true});
+}
+""")  # Mocks dependency delivery from the verified local install; the staged API tests still run for real.
+        self.env.update(GALLERY_TEST_NPM=npm_stub.as_posix(), GALLERY_TEST_MODULES=(ROOT / "node_modules").as_posix())
         self.mock_bin = mock_bin
 
     def git(self, cwd, *args):

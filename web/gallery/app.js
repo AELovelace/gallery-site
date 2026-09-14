@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (selector) => document.querySelector(selector); // Keeps DOM lookups readable throughout the gallery.
-const state = { sets: [], active: null, admin: false, csrf: "", viewerIndex: 0, editing: null, captionId: null, uploading: false };
+const state = { sets: [], active: null, admin: false, authenticated: false, canPost: false, usersPage: 0, csrf: "", viewerIndex: 0, editing: null, captionId: null, uploading: false };
 const apiRoot = new URL("api/", location.href); // Keeps requests beside the gallery even when the site lives in a subdirectory.
 const engagementRequests = new Map(); // Serializes each target's view/like requests so slower responses cannot undo newer feedback.
 
@@ -49,9 +49,10 @@ function engagementBar(kind, target) {
   like.type = "button";
   like.setAttribute("aria-pressed", String(Boolean(target.liked)));
   like.setAttribute("aria-label", `${target.liked ? "Unlike" : "Like"} ${kind === "sets" ? "collection" : "media"}, ${target.likes || 0} likes`);
-  like.title = "One like per browser. Click again to remove your like.";
+  like.title = state.authenticated ? "One like per LiDollID account. Click again to remove your like." : "Sign in with LiDollID to like this.";
   like.disabled = engagementRequests.has(`${kind}:${target.id}`);
   like.addEventListener("click", () => {
+    if (!state.authenticated) { $("#login-dialog").showModal(); return; }
     document.querySelectorAll(`[data-engagement="${kind}:${target.id}"] .engagement-feedback`).forEach((node) => { node.textContent = ""; });
     sendEngagement(kind, target.id, "like", { liked: !engagementTarget(kind, target.id)?.liked });
   });
@@ -75,26 +76,30 @@ async function api(path, options = {}) {
   const response = await fetch(new URL(path, apiRoot), { ...options, headers, credentials: "same-origin", cache: "no-store" });
   const data = await response.json().catch(() => ({ error: "The gallery service is unavailable. Please try again shortly." }));
   if (!response.ok) {
-    if (response.status === 401) setAdmin(false); // Hides management controls when a server session expires.
+    if (response.status === 401) setAccount({}); // Hides management controls when a server session expires.
     throw new Error(data.error || "The request could not be completed.");
   }
   return data;
 }
 
-function setAdmin(enabled) {
-  state.admin = enabled;
-  $("#manager").hidden = !enabled;
-  $("#login-button").hidden = enabled;
-  $("#logout-button").hidden = !enabled;
-  $("#set-actions").hidden = !enabled;
-  $("#upload-form").hidden = !enabled;
-  if (state.active) renderDetail(); // Rebuilds item controls to match the current server-authenticated session.
+function setAccount(account) { // Separates account access, posting permission and owner management in the interface.
+  state.authenticated = Boolean(account.authenticated);
+  state.admin = Boolean(account.admin);
+  state.canPost = Boolean(account.can_post);
+  $("#manager").hidden = !state.canPost;
+  $("#users-button").hidden = !state.admin;
+  $("#login-button").hidden = state.authenticated;
+  $("#logout-button").hidden = !state.authenticated;
+  $("#account-label").textContent = account.user ? 'Signed in as ' + account.user.username : 'Sign in to like and download originals';
+  if (!state.admin && $("#users-dialog").open) $("#users-dialog").close();
+  if (state.active) renderDetail();
 }
 
 function mediaElement(item, full = false) {
-  const media = element(item.kind === "video" ? "video" : "img");
-  media.src = item.url;
-  if (item.kind === "video") {
+  const original = full && state.authenticated;
+  const media = element(item.kind === "video" && original ? "video" : "img");
+  media.src = original ? item.url : item.preview_url;
+  if (item.kind === "video" && original) {
     media.controls = full;
     media.preload = full ? "metadata" : "none"; // Avoids downloading every video while browsing a collection.
     media.playsInline = true;
@@ -110,14 +115,17 @@ function mediaElement(item, full = false) {
 
 function mediaCover(item) {
   const cover = element("div", "cover");
-  if (item?.kind === "video") {
+  if (item?.kind === "video" && !item.preview_url) {
     const preview = element("img", "video-preview");
     preview.alt = ""; // The enclosing button already names the video; its preview is decorative.
     const play = element("span", "video-play", "▷");
     play.setAttribute("aria-hidden", "true");
     cover.append(preview, play);
     videoPreviews.watch(preview, item.url);
-  } else if (item) cover.append(mediaElement(item));
+  } else if (item) {
+    cover.append(mediaElement(item));
+    if (item.kind === "video") cover.append(element("span", "video-play", "Play"));
+  }
   else cover.append(element("span", "cover-symbol", "✧"));
   return cover; // Gives collection covers and individual videos the same lazy still-frame preview and play affordance.
 }
@@ -148,7 +156,7 @@ function renderCollections() {
   }
   $("#empty-state").hidden = matching.length > 0;
   $("#empty-title").textContent = query ? "No collections found" : "A little space for memories";
-  $("#empty-description").textContent = query ? "Try another title or a shorter search." : state.admin ? "Choose + New set to start your first collection." : "The first collection is on its way. Come back soon.";
+  $("#empty-description").textContent = query ? "Try another title or a shorter search." : state.canPost ? "Choose + New set to start your first collection." : "The first collection is on its way. Come back soon.";
 }
 
 function openSet(id, focus = true) {
@@ -174,6 +182,7 @@ function actionButton(label, handler, danger = false) {
 
 function renderDetail() {
   const set = state.active;
+  $("#set-actions").hidden = $("#upload-form").hidden = !(state.canPost && set.can_edit);
   $("#set-title").textContent = set.title;
   $("#set-description").textContent = set.description;
   $("#set-meta").textContent = mediaCount(set.items);
@@ -190,7 +199,7 @@ function renderDetail() {
     open.addEventListener("click", () => showViewer(index));
     card.append(open, element("p", "preserve-lines", item.caption || `${item.kind === "video" ? "Video" : "Photo"} ${index + 1}`));
     card.append(engagementBar("items", item));
-    if (state.admin) {
+    if (state.canPost && set.can_edit) {
       const controls = element("div", "media-controls");
       controls.append(actionButton("Caption", () => {
         state.captionId = item.id;
@@ -221,6 +230,9 @@ function showViewer(index) {
   $("#viewer-caption").textContent = item.caption;
   $("#viewer-counter").textContent = `${state.viewerIndex + 1} / ${items.length}`;
   $("#viewer-engagement").replaceChildren(engagementBar("items", item));
+  $("#download-media").href = state.authenticated ? item.download_url : "auth/login";
+  $("#download-media").textContent = state.authenticated ? "Download original" : "Sign in for the original";
+  $("#preview-notice").hidden = state.authenticated;
   $("#previous-media").disabled = $("#next-media").disabled = items.length < 2;
   if (!$("#viewer").open) $("#viewer").showModal();
   sendEngagement("items", item.id, "view"); // Thumbnails and video range requests do not count as opens.
@@ -240,8 +252,8 @@ async function initialize() {
   try {
     const session = await api("session");
     state.csrf = session.csrf;
-    setAdmin(session.authenticated);
-    $("#upload-hint").textContent = `JPG, PNG, GIF, WebP, MP4 or WebM. Up to ${session.max_upload_mb} MB per file. Saved uploads are public.`;
+    setAccount(session);
+    $("#upload-hint").textContent = `JPG, PNG, GIF, WebP, MP4 or WebM. Up to ${session.max_upload_mb} MB per file. Previews are public; originals require LiDollID sign-in.`;
     await refresh();
   } catch (error) {
     $("#status").textContent = error.message;
@@ -260,15 +272,6 @@ function wireForm(selector, errorSelector, submit) {
     finally { button.disabled = false; }
   }); // Keeps each form usable after a validation, network, or authentication error.
 }
-
-wireForm("#login-form", "#login-error", async (form) => {
-  const data = await api("login", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) });
-  state.csrf = data.csrf;
-  form.reset();
-  $("#login-dialog").close();
-  setAdmin(true);
-  await refresh();
-});
 
 wireForm("#edit-form", "#edit-error", async (form) => {
   const data = await api(state.editing ? `sets/${state.editing}` : "sets", { method: state.editing ? "PATCH" : "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) });
@@ -295,7 +298,7 @@ function uploadFile(setId, file, progress) {
       try { data = JSON.parse(request.responseText); } catch { data = { error: "The server could not accept this upload." }; }
       if (request.status >= 200 && request.status < 300) resolve(data);
       else {
-        if (request.status === 401) setAdmin(false);
+        if (request.status === 401) setAccount({});
         reject(new Error(data.error || "Upload failed."));
       }
     };
@@ -344,9 +347,10 @@ function editSet(set = null) {
   $("#edit-dialog").showModal();
 }
 
-$("#login-button").addEventListener("click", () => { $("#login-error").textContent = ""; $("#login-dialog").showModal(); });
+$("#login-button").addEventListener("click", () => $("#login-dialog").showModal());
+$("#download-media").addEventListener("click", event => { if (!state.authenticated) { event.preventDefault(); $("#login-dialog").showModal(); } });
 $("#logout-button").addEventListener("click", async () => {
-  try { await api("logout", { method: "POST" }); state.csrf = ""; setAdmin(false); await initialize(); }
+  try { await api("logout", { method: "POST" }); state.csrf = ""; setAccount({}); await initialize(); }
   catch (error) { alert(error.message); }
 });
 $("#new-set").addEventListener("click", () => editSet());
@@ -383,3 +387,42 @@ $("#crt-toggle").addEventListener("click", () => {
 });
 syncCrt();
 initialize();
+
+async function loadUsers() { // Paginates account management; user-authored names always enter the DOM through textContent.
+  $("#users-error").textContent = '';
+  const data = await api('users?q=' + encodeURIComponent($("#users-search").value) + '&page=' + state.usersPage);
+  $("#users-list").replaceChildren();
+  for (const user of data.users) {
+    const row = element('form', 'user-row');
+    row.dataset.userId = user.id;
+    const description = element('div');
+    description.append(element('strong', '', user.username), element('p', 'field-hint', user.collections + ' collections'), element('small', '', 'Account ID: ' + user.subject));
+    const label = element('label', '', 'Gallery access');
+    const role = element('select');
+    role.name = 'role';
+    for (const value of user.role === 'owner' ? ['owner'] : ['viewer','contributor']) {
+      const option = element('option', '', value === 'contributor' ? 'Contributor (can post)' : value === 'owner' ? 'Owner' : 'Viewer');
+      option.value = value; role.append(option);
+    }
+    role.value = user.role;
+    role.disabled = user.role === 'owner';
+    label.append(role);
+    const blockedLabel = element('label', 'checkbox-label', 'Disable gallery access');
+    const blocked = element('input'); blocked.type = 'checkbox'; blocked.name = 'disabled'; blocked.checked = Boolean(user.disabled); blocked.disabled = user.role === 'owner'; blockedLabel.prepend(blocked);
+    const save = element('button', 'action', 'Save access'); save.type = 'submit'; save.disabled = user.role === 'owner';
+    row.append(description, label, blockedLabel, save);
+    row.addEventListener('submit', async event => {
+      event.preventDefault(); save.disabled = true;
+      try { await api('users/' + user.id, { method: 'PATCH', body: JSON.stringify({ role: role.value, disabled: blocked.checked }) }); await loadUsers(); }
+      catch(error) { $("#users-error").textContent = error.message; }
+      finally { save.disabled = user.role === 'owner'; }
+    });
+    $("#users-list").append(row);
+  }
+  $("#users-page").textContent = data.total + ' accounts - page ' + (state.usersPage + 1);
+  $("#users-prev").disabled = state.usersPage === 0;
+  $("#users-next").disabled = (state.usersPage + 1) * 50 >= data.total;
+}
+$("#users-button").addEventListener('click', async () => { $("#users-dialog").showModal(); try { await loadUsers(); } catch(error) { $("#users-error").textContent = error.message; } });
+$("#users-search-form").addEventListener('submit', async event => { event.preventDefault(); state.usersPage = 0; try { await loadUsers(); } catch(error) { $("#users-error").textContent = error.message; } });
+for (const [id, delta] of [['users-prev', -1], ['users-next', 1]]) document.getElementById(id).addEventListener('click', async () => { state.usersPage += delta; try { await loadUsers(); } catch(error) { $("#users-error").textContent = error.message; } });

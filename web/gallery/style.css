@@ -81,3 +81,12 @@ dialog::backdrop { background: #10030de8; }
 @media (max-width: 900px) { .collection-grid, .media-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .archive-stamp { display: none; } }
 @media (max-width: 560px) { .collection-grid, .media-grid { grid-template-columns: 1fr; } .gallery-header nav { width: 100%; } .gallery-header .action { padding: 10px; font-size: .75rem; } .gallery-hero { padding-block: 44px 28px; } .search-label { width: 100%; } .upload-panel { padding: 14px; } }
 @media (prefers-reduced-motion: reduce) { .collection-card { transition: none; } }
+
+/* Account management keeps long identity IDs and permission controls usable on mobile. */
+.users-dialog { width: min(900px, calc(100vw - 32px)); max-height: 85vh; overflow: auto; }
+.user-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(160px,1fr); gap:16px; padding:20px 0; border-bottom:1px solid #805069; }
+.user-row small { overflow-wrap:anywhere; }
+.user-row select { width:100%; padding:10px; color:inherit; background:#370f2d; }
+.checkbox-label { display:flex; align-items:center; gap:10px; }
+.checkbox-label input { width:auto; }
+@media(max-width:600px) { .user-row { grid-template-columns:1fr; } }

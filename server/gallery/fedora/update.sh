@@ -115,6 +115,11 @@ USAGE
   printf '%s\n' "$gallery_revision" > "$gallery_work/candidate/.deployment-revision"
   restorecon -RF "$gallery_work"
   cd -- "$gallery_work/candidate"
+  [[ -f /usr/lib/node_modules_24/npm/bin/npm-cli.js ]] || gallery_update_die 'Install nodejs24-npm first, or run the current install.sh once.'
+  command -v ffmpeg >/dev/null || gallery_update_die 'Install ffmpeg-free (or a compatible ffmpeg) before updating.'
+  "$gallery_node" /usr/lib/node_modules_24/npm/bin/npm-cli.js ci --omit=dev --ignore-scripts --no-audit --no-fund # Dependency download failures leave the running release untouched.
+  chmod -R a+rX "$gallery_work/candidate/node_modules" # Keeps the staged runtime readable by the service account.
+  restorecon -RF "$gallery_work/candidate"
   runuser -u lidoll-gallery -- "$gallery_node" --test server/gallery/gallery.test.mjs # Tests staged code from an accessible directory while the existing service keeps running.
 
   systemctl stop lidoll-gallery

@@ -63,10 +63,9 @@ Optionally append `--zone YOUR_LAN_ZONE` to require a specific firewall zone.
 Run `bash server/gallery/fedora/install.sh --help` for usage; help needs no sudo
 and makes no changes. Before installing packages, the installer checks the
 host/IP, running firewalld, runtime/permanent zone availability, and whether
-first-time owner setup has an interactive terminal. It then installs
+required Node and npm binaries are available. It then installs
 Fedora packages, creates the `lidoll-gallery` service user, installs source files
-and the systemd unit, runs the API tests, and starts the service. On first use,
-it prompts for an owner username and a hidden password of at least 12 characters.
+and the systemd unit, runs the API tests, and starts the service. It installs pinned production npm dependencies and ffmpeg when absent. Follow the LiDollID migration below to bind the owner; there is no password prompt.
 Existing credentials, collections, uploads, and environment settings are
 preserved when reinstalling, except that `--port` explicitly changes `PORT`
 and `--max-upload-mb` explicitly changes `GALLERY_MAX_UPLOAD_MB`.
@@ -74,7 +73,7 @@ The app source/unit are updated. A listener belonging to another process on
 the selected port stops installation before services or app files are changed.
 
 The installer changes its working directory to `/opt/lidoll-gallery` before
-running tests or owner setup as `lidoll-gallery`. A private source directory
+running tests as `lidoll-gallery`. A private source directory
 such as `/home/aedith/gallery-site` does not need to be accessible to that user.
 Older installers can fail with `EACCES: permission denied, lstat` on the source
 directory because Node's test discovery also inspects the inherited working
@@ -223,10 +222,11 @@ photos and a video, then check playback/seeking, captions and cover selection.
 MP4/WebM thumbnails should show a still frame with a play overlay. Select a
 video as the collection cover and check its preview in the collection list.
 Opening a video should show its poster before playing from the beginning.
-Verify a signed-out window sees saved content and does not show editing controls.
+Verify a signed-out window sees only previews and has no editing controls.
 Try a larger video through nginx to validate the real proxy limits. Test the
 main index link, mobile layout, and logout. Like a collection and a media item
-while signed out, refresh to confirm the likes persist, then remove a like.
+while signed in, refresh to confirm the likes persist, then remove a like.
+Signed-out like/download actions must offer LiDollID sign-in and registration; direct original-media URLs must return 401. Grant a test member Contributor access from Users, verify they can post only to their own sets, then revoke access.
 Open the same collection/media repeatedly: its view count should increase only
 once for that browser per UTC day. Check that video playback continues when liked.
 
@@ -236,6 +236,8 @@ verification. From another LAN host, 8787 should be refused while it remains
 reachable from `10.1.1.20`.
 
 ## Updates, backups and password resets
+
+Gallery password login has been replaced by LiDollID. See the owner migration below; reset shared passwords through the identity service.
 
 For routine code updates, use the Git checkout on the backend:
 
@@ -277,14 +279,7 @@ database migrations performed by new code or restore a data backup. Inspect
 recovery directories are retained for inspection and can be removed manually
 after verifying the update; they contain application files, not a data backup.
 
-Video previews require the updated `web/gallery/index.html`, `app.js`,
-`video-previews.js`, and `style.css` together. The installer and release archive
-include them. Existing videos gain previews automatically after the page is
-refreshed; no database migration, upload conversion, additional Fedora package,
-or nginx setting is required. Each browser extracts a small still frame using
-the existing media byte-range endpoint and its own supported codecs. Large
-videos may need several range requests before a preview appears; preview
-decoders time out after 20 seconds and leave the play overlay as a fallback.
+Public previews now require sharp and ffmpeg on the server. Deploy the complete release; original media routes enforce LiDollID authentication even when a visitor knows an old URL. Existing videos are processed lazily. A missing codec produces a placeholder, never a public original. Fedora ffmpeg-free supports the codecs shipped by Fedora; use an existing compatible ffmpeg build for other formats.
 
 For release archives or installation/configuration changes, use the installer
 from a separate extracted folder or checkout. It restarts the app and preserves `/var/lib/lidoll-gallery` and the
@@ -293,17 +288,7 @@ If the installer fails after the old service stops, inspect the error/log, fix
 it, and rerun the installer. Unlike the Git updater, the installer does not
 automatically roll back app source.
 
-The views/likes update automatically creates additional SQLite tables at startup;
-it does not replace existing sets, uploads, owner credentials or sessions. Old
-content starts with zero counts. Backups of the data directory include the new
-counts and visitor-signing secret. No new nginx, firewall, or environment setting
-is needed. Deploy frontend and backend files from the same release together.
-
-Reset the owner password locally on the gallery box:
-
-```sh
-sudo -u lidoll-gallery env GALLERY_DATA_DIR=/var/lib/lidoll-gallery /usr/bin/node-24 /opt/lidoll-gallery/server/gallery/setup.mjs
-```
+The LiDollID update migrates existing data and revokes legacy password sessions. Keep a backup before updating. Identity passwords are managed by LiDollID, not the gallery.
 
 For configuration changes, edit `/etc/lidoll-gallery.env`, then run
 `sudo systemctl restart lidoll-gallery`. The installer targets the given IPs and
@@ -405,3 +390,45 @@ proxy managed through a UI, edit its route through that manager instead of
 editing generated files. If the direct backend fails too, check
 `sudo systemctl status lidoll-gallery --no-pager` and its journal on the backend
 before changing proxy routes.
+
+## LiDollID registration and owner migration
+
+Deploy this release as a unit (frontend, server, dependencies). For the first upgrade, use install.sh so nodejs24-npm and ffmpeg are available. Later Git updates install pinned production dependencies before stopping the running gallery. The identity issuer must be reachable from the gallery server over HTTPS; if hairpin routing is unavailable, use internal DNS or a hosts entry pointing the issuer hostname to the TLS proxy. Keep the public issuer URL and certificate validation intact.
+
+1. From the deployed **omo-trainer** directory on the identity host, register the new PKCE client:
+
+```sh
+sudo -u lidoll-auth /usr/bin/node-24 --env-file=/etc/lidoll/auth.env \
+  scripts/auth-admin.mjs add-client lidoll-gallery \
+  https://lidoll.dev/gallery/auth/callback
+sudo systemctl restart lidoll-auth
+```
+
+If the client already exists, verify its exact callback rather than adding another registration. It needs response_types ["code"], grant_types ["authorization_code"], and token_endpoint_auth_method "none".
+
+2. Add to **/etc/lidoll-gallery.env** (preserve other settings):
+
+```ini
+GALLERY_OIDC_ISSUER=https://auth.sadgirlsclub.wtf
+GALLERY_OIDC_CLIENT_ID=lidoll-gallery
+GALLERY_FFMPEG=/usr/bin/ffmpeg
+```
+
+3. Start the updated gallery once to initialize its schema, then stop it and bind the existing **lidoll** account by reading its permanent ID from the local identity database. The command refuses a missing/disabled account or a different previously bound owner. It never edits identity records or passwords. Back up the stopped data directory before binding.
+
+```sh
+sudo systemctl restart lidoll-gallery
+sudo systemctl stop lidoll-gallery
+sudo /usr/bin/node-24 --env-file=/etc/lidoll-gallery.env \
+  /opt/lidoll-gallery/server/gallery/setup.mjs bind-owner \
+  --auth-db /var/lib/lidoll/auth/auth.sqlite --username lidoll
+sudo chown -R lidoll-gallery:lidoll-gallery /var/lib/lidoll-gallery
+sudo restorecon -RF /var/lib/lidoll-gallery
+sudo systemctl start lidoll-gallery
+```
+
+The root invocation can read both private databases; it writes only the gallery database. Restoring ownership afterward keeps the service writable. This is idempotent for the same permanent account. Do not substitute lid0ll unless that is the intended account: the username lookup is exact.
+
+4. Open **https://lidoll.dev/gallery/** and sign in as **lidoll**. Existing collections are yours. Open **Users**; after another person signs in to the gallery, select **Contributor (can post)** and **Save access** to grant posting, or return them to Viewer to revoke it. Disabled gallery accounts cannot like, read originals, download or post; public previews remain public.
+
+The deployment requires Node 24.9+, [nodejs24-npm](https://packages.fedoraproject.org/pkgs/nodejs24/nodejs24-npm/), and [ffmpeg-free](https://packages.fedoraproject.org/pkgs/ffmpeg/ffmpeg-free/) or an existing compatible ffmpeg. npm runs with install scripts disabled; sharp's platform binaries come from the lockfile's optional packages. Browser tests use a local signed OIDC issuer and do not contact live LiDollID.

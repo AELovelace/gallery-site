@@ -13,9 +13,8 @@ $env:PORT = [string]$Port
 $env:GALLERY_ORIGIN = $PublicOrigin # Controls origin checks and HTTPS-only authentication cookies.
 $env:GALLERY_DATA_DIR = [System.IO.Path]::GetFullPath($DataDirectory)
 $env:GALLERY_MAX_UPLOAD_MB = '250'
-if (-not (Test-Path -LiteralPath (Join-Path $env:GALLERY_DATA_DIR 'admin.json'))) {
-    & node (Join-Path $galleryProjectRoot 'server/gallery/setup.mjs') # Prompts locally for the owner account before starting a new installation.
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
+# Install dependencies with npm ci before startup; bind the LiDollID owner using FEDORA.md.
+if (-not $env:GALLERY_OIDC_ISSUER) { $env:GALLERY_OIDC_ISSUER = 'https://auth.sadgirlsclub.wtf' }
+if (-not $env:GALLERY_OIDC_CLIENT_ID) { $env:GALLERY_OIDC_CLIENT_ID = 'lidoll-gallery' }
 & node (Join-Path $galleryProjectRoot 'server/gallery/server.mjs') # Runs in the foreground so a service wrapper can supervise the same entry point.
 exit $LASTEXITCODE

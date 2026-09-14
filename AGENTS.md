@@ -9,9 +9,10 @@ login, collection API, and uploaded data independent of the game/editor.
   depend on a stylesheet served by the game host.
 - Keep inline comments explaining substantial functions and authentication or
   storage behavior. Use `textContent` for user-authored titles and captions.
-- Content management requires owner authentication, same-origin checks and CSRF.
-  Public view/like endpoints accept anonymous sessions with signed visitor cookies,
-  and must still enforce same-origin and CSRF checks; this grants no editing rights.
+- Content management requires LiDollID authentication, posting permission, collection ownership (or owner role), same-origin checks and CSRF.
+  Public views accept anonymous sessions with signed visitor cookies. Likes require LiDollID and are account-scoped.
+  Original media and downloads require a live enabled account; only reduced still previews are public.
+  Management/reaction mutations must enforce same-origin and CSRF checks.
   Keep credentials, uploads and SQLite outside the public web directory and Git.
 - Put Python scripts in `python/`, PowerShell scripts in `ps/`, and Fedora Bash
   deployment scripts in `server/gallery/fedora/`.

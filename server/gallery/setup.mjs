@@ -1,42 +1,35 @@
-import { createInterface } from "node:readline/promises";
-import { Writable } from "node:stream";
-import { mkdirSync, existsSync, writeFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { passwordRecord } from "./server.mjs";
+﻿import { DatabaseSync } from 'node:sqlite';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { initAccounts, bindOwner } from './identity.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const dataDir = path.resolve(process.env.GALLERY_DATA_DIR || path.join(root, "gallery-data"));
-const webRoot = path.join(root, "web");
-if (dataDir === webRoot || dataDir.startsWith(webRoot + path.sep)) throw new Error("Keep gallery data outside web/.");
-let muted = false;
-const output = new Writable({ write(chunk, encoding, callback) { if (!muted) process.stdout.write(chunk, encoding); callback(); } }); // Suppresses password echo without putting a secret in command history.
-const prompt = createInterface({ input: process.stdin, output, terminal: true });
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const args = process.argv.slice(2);
+const usage = 'Usage: node server/gallery/setup.mjs bind-owner --auth-db /var/lib/lidoll/auth/auth.sqlite --username lidoll [--issuer https://auth.sadgirlsclub.wtf]';
+let auth, gallery;
 try {
-  const adminPath = path.join(dataDir, "admin.json");
-  if (existsSync(adminPath) && (await prompt.question("Replace the existing owner password? Type YES: ")) !== "YES") process.exitCode = 1;
-  else {
-    const username = await prompt.question("Owner username: ");
-    process.stdout.write("Password (at least 12 characters; hidden): ");
-    muted = true;
-    const password = await prompt.question("");
-    muted = false;
-    process.stdout.write("\nConfirm password (hidden): ");
-    muted = true;
-    const confirmation = await prompt.question("");
-    muted = false;
-    process.stdout.write("\n");
-    if (password !== confirmation) throw new Error("Passwords do not match.");
-    const owner = await passwordRecord(username, password);
-    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-    writeFileSync(adminPath, JSON.stringify(owner, null, 2) + "\n", { mode: 0o600 });
-    if (existsSync(path.join(dataDir, "gallery.sqlite"))) {
-      const { DatabaseSync } = await import("node:sqlite");
-      const db = new DatabaseSync(path.join(dataDir, "gallery.sqlite"));
-      db.exec("DELETE FROM sessions"); // Revokes existing sessions when the owner changes the password.
-      db.close();
-    }
-    console.log("Gallery owner saved. Start with: node server/gallery/server.mjs");
+  if (args[0] !== 'bind-owner') throw Error(usage);
+  const values = {};
+  for (let index=1; index<args.length; index+=2) {
+    if (!['--auth-db','--username','--issuer'].includes(args[index]) || !args[index+1] || values[args[index]]) throw Error(usage);
+    values[args[index]] = args[index+1];
   }
-} catch (error) { console.error(error.message); process.exitCode = 1; }
-finally { muted = false; prompt.close(); }
+  if (!values['--auth-db'] || !values['--username']) throw Error(usage);
+  const issuer = values['--issuer'] || process.env.GALLERY_OIDC_ISSUER || 'https://auth.sadgirlsclub.wtf';
+  const parsed = new URL(issuer);
+  if (parsed.protocol !== 'https:' || parsed.origin !== issuer) throw Error('Use the exact public HTTPS LiDollID issuer origin.');
+  const dataDir = path.resolve(process.env.GALLERY_DATA_DIR || path.join(root,'gallery-data'));
+  const dbFile = path.join(dataDir,'gallery.sqlite');
+  if (!existsSync(dbFile)) throw Error('Start the updated gallery once to initialize its database, then stop it before binding its owner.');
+  auth = new DatabaseSync(path.resolve(values['--auth-db']), { readOnly: true });
+  const matches = auth.prepare('SELECT id,username,disabled FROM accounts WHERE username=?').all(values['--username']);
+  if (matches.length !== 1 || matches[0].disabled) throw Error('Expected exactly one enabled LiDollID account with that exact username. No gallery ownership was changed.');
+  gallery = new DatabaseSync(dbFile);
+  gallery.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
+  initAccounts(gallery);
+  const account = matches[0];
+  bindOwner(gallery, issuer, account.id, account.username); // Reads the identity database without editing it and never matches ownership by a browser-supplied username.
+  console.log('Gallery owner bound to LiDollID account ' + account.username + '. Existing unowned collections now belong to this account.');
+} catch(error) { console.error(error.message); process.exitCode=1; }
+finally { gallery?.close(); auth?.close(); }

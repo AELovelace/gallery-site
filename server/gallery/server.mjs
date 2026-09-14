@@ -1,4 +1,6 @@
 import http from "node:http";
+import { initAccounts, createIdentity } from "./identity.mjs";
+import { createPreviews } from "./previews.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID, createHash, createHmac, scrypt, timingSafeEqual } from "node:crypto";
@@ -64,8 +66,7 @@ export function createGalleryServer(options = {}) {
   if (!secure && !["localhost", "127.0.0.1", "[::1]"].includes(new URL(origin).hostname)) throw new Error("Public galleries require an HTTPS GALLERY_ORIGIN.");
   const maxUploadMB = Number(options.maxUploadMB || process.env.GALLERY_MAX_UPLOAD_MB || 1024); // Defaults to 1 GiB per file; the session response supplies this limit to the upload UI.
   if (!Number.isFinite(maxUploadMB) || maxUploadMB < 1 || maxUploadMB > 2048) throw new Error("GALLERY_MAX_UPLOAD_MB must be between 1 and 2048.");
-  const adminPath = path.join(dataDir, "admin.json");
-  if (!existsSync(adminPath)) throw new Error("Run node server/gallery/setup.mjs to create the gallery owner first.");
+
   const db = new DatabaseSync(path.join(dataDir, "gallery.sqlite"));
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
     CREATE TABLE IF NOT EXISTS sets (id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL, cover_id TEXT, created INTEGER NOT NULL);
@@ -79,10 +80,12 @@ export function createGalleryServer(options = {}) {
     CREATE TABLE IF NOT EXISTS item_views (target TEXT REFERENCES items(id) ON DELETE CASCADE, visitor TEXT NOT NULL, day INTEGER NOT NULL, PRIMARY KEY(target, visitor, day));
     CREATE TABLE IF NOT EXISTS set_likes (target TEXT REFERENCES sets(id) ON DELETE CASCADE, visitor TEXT NOT NULL, PRIMARY KEY(target, visitor));
     CREATE TABLE IF NOT EXISTS item_likes (target TEXT REFERENCES items(id) ON DELETE CASCADE, visitor TEXT NOT NULL, PRIMARY KEY(target, visitor));`);
+  initAccounts(db);
+  const identity = createIdentity(db, { origin, issuer: options.issuer || process.env.GALLERY_OIDC_ISSUER || "https://auth.sadgirlsclub.wtf", clientId: options.clientId || process.env.GALLERY_OIDC_CLIENT_ID || "lidoll-gallery" });
+  const previews = createPreviews(dataDir, options.ffmpeg);
   const query = (sql, ...args) => db.prepare(sql).all(...args);
   const one = (sql, ...args) => db.prepare(sql).get(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args);
-  const cookieName = secure ? "__Secure-ldq_gallery" : "ldq_gallery";
   const visitorCookieName = secure ? "__Secure-ldq_visitor" : "ldq_visitor";
   run("INSERT OR IGNORE INTO settings VALUES ('visitor_secret', ?)", token());
   const visitorSecret = one("SELECT value FROM settings WHERE key='visitor_secret'").value; // Persists browser identity signatures through restarts and owner-password changes.
@@ -115,21 +118,17 @@ export function createGalleryServer(options = {}) {
     };
   }
 
-  function sessionFor(request) {
-    const value = request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
-    if (!value || !/^[a-f0-9]{64}$/.test(value)) return null;
-    return one("SELECT * FROM sessions WHERE id=? AND expires>?", digest(value), Date.now()) || null;
+  const sessionFor = request => identity.session(request);
+  function requireUser(request) { // Rejects anonymous, expired and disabled accounts at the server boundary.
+    const current = sessionFor(request);
+    if (!current?.authenticated) fail(401, "Sign in with LiDollID to continue.");
+    return current;
   }
-
-  function newSession(response, authenticated) {
-    const value = token();
-    const csrf = token();
-    const lifetime = authenticated ? 43200 : 3600;
-    run("DELETE FROM sessions WHERE expires<=?", Date.now());
-    if (one("SELECT count(*) AS total FROM sessions").total > 10000) fail(503, "The gallery is busy. Please try again later.");
-    run("INSERT INTO sessions VALUES (?, ?, ?, ?)", digest(value), csrf, authenticated ? 1 : 0, Date.now() + lifetime * 1000);
-    appendCookie(response, `${cookieName}=${value}; Path=/gallery/; HttpOnly; SameSite=Strict; Max-Age=${lifetime}${secure ? "; Secure" : ""}`);
-    return { csrf, authenticated: Boolean(authenticated) }; // Gives the browser a CSRF token while the session cookie remains inaccessible to scripts.
+  function requireEditor(request, setId = null) { // Contributors can change only their own collections; the owner can manage every collection.
+    const current = requireUser(request);
+    if (!current.can_post) fail(403, "Posting permission is required.");
+    if (setId && !current.admin && one("SELECT owner_id FROM sets WHERE id=?", setId)?.owner_id !== current.user_id) fail(403, "You can manage only your own collections.");
+    return current;
   }
 
   function json(response, status, data) {
@@ -152,7 +151,7 @@ export function createGalleryServer(options = {}) {
       status = 206;
       response.setHeader("Content-Range", `bytes ${start}-${end}/${info.size}`);
     }
-    response.writeHead(status, { "Content-Type": contentType, "Content-Length": Math.max(0, end - start + 1), "Accept-Ranges": "bytes", "Cache-Control": "no-cache" });
+    response.writeHead(status, { "Content-Type": contentType, "Content-Length": Math.max(0, end - start + 1), "Accept-Ranges": "bytes", "Cache-Control": response.getHeader("Cache-Control") || "no-cache" });
     if (request.method === "HEAD" || info.size === 0) { response.end(); return; }
     const stream = createReadStream(filename, { start, end });
     stream.on("error", () => response.destroy());
@@ -161,6 +160,7 @@ export function createGalleryServer(options = {}) {
   }
 
   async function removeFiles(filenames) {
+    await Promise.all(filenames.map(name => previews.remove(path.parse(name).name)));
     await Promise.all(filenames.map((name) => unlink(path.join(dataDir, "uploads", name)).catch((error) => {
       if (error.code !== "ENOENT") console.error("Could not remove unlisted gallery file:", name, error.code);
     }))); // Deleted database entries become inaccessible immediately, even if disk cleanup needs attention.
@@ -178,12 +178,25 @@ export function createGalleryServer(options = {}) {
       if (pathname.startsWith("/gallery/")) {
         response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'");
       }
+      if (pathname.startsWith("/gallery/auth/")) {
+        await identity.route(request, response, pathname.slice("/gallery/auth/".length)); return;
+      }
       if (!pathname.startsWith("/gallery/api/")) {
         if (!["GET", "HEAD"].includes(method)) fail(405, "Method not allowed.");
-        if (pathname.startsWith("/gallery/media/")) {
-          const id = pathname.slice("/gallery/media/".length);
+        const mediaRoute = /^\/gallery\/(media|download|preview)\/([a-f0-9-]{36})$/.exec(pathname);
+        if (mediaRoute) {
+          const [, mode, id] = mediaRoute;
           const item = one("SELECT * FROM items WHERE id=?", id);
           if (!item) fail(404, "Media not found.");
+          if (mode === "preview") {
+            const preview = await previews.get(item);
+            if (!one("SELECT id FROM items WHERE id=?", id)) fail(404, "Media not found.");
+            if (!preview) { response.writeHead(200, { "Content-Type": "image/svg+xml", "Cache-Control": "no-store" }); response.end(method === "HEAD" ? undefined : '<svg xmlns="http://www.w3.org/2000/svg" width="480" height="320"><rect width="100%" height="100%" fill="#370f2d"/><text x="50%" y="50%" text-anchor="middle" fill="#ffb3d4" font-size="20">Preview unavailable</text></svg>'); return; }
+            await sendFile(request, response, preview, "image/webp"); return;
+          }
+          requireUser(request); // Original bytes, HEAD and range requests all require a live account, including guessed URLs.
+          response.setHeader("Cache-Control", "private, no-store");
+          if (mode === "download") response.setHeader("Content-Disposition", 'attachment; filename="gallery-' + item.id + path.extname(item.filename) + '"');
           await sendFile(request, response, path.join(dataDir, "uploads", item.filename), MIME[path.extname(item.filename)]);
           return;
         }
@@ -199,15 +212,23 @@ export function createGalleryServer(options = {}) {
       const route = pathname.slice("/gallery/api/".length);
       const session = sessionFor(request);
       const visitor = visitorFor(request);
+      const likeIdentity = session?.authenticated ? "account:" + session.user_id : null;
       if (method === "GET" && route === "session") {
         if (!visitor) newVisitor(response);
-        const current = session ? { authenticated: Boolean(session.authenticated), csrf: session.csrf } : newSession(response, false);
+        const current = session ? identity.summary(session) : identity.createSession(response);
         json(response, 200, { ...current, max_upload_mb: maxUploadMB }); return;
       }
       if (method === "GET" && route === "sets") {
         const items = query("SELECT id, set_id, kind, caption FROM items ORDER BY created, rowid");
-        const sets = query("SELECT * FROM sets ORDER BY created DESC, rowid DESC").map((set) => ({ ...set, ...engagement("set", set.id, visitor), items: items.filter((item) => item.set_id === set.id).map((item) => ({ ...item, ...engagement("item", item.id, visitor), url: `/gallery/media/${item.id}` })) }));
+        const sets = query("SELECT * FROM sets ORDER BY created DESC, rowid DESC").map((set) => ({ ...set, can_edit: Boolean(session?.can_post && (session.admin || set.owner_id === session.user_id)), ...engagement("set", set.id, likeIdentity), items: items.filter((item) => item.set_id === set.id).map((item) => ({ ...item, ...engagement("item", item.id, likeIdentity), url: `/gallery/media/${item.id}`, preview_url: `/gallery/preview/${item.id}`, download_url: `/gallery/download/${item.id}` })) }));
         json(response, 200, { sets }); return;
+      }
+      if (method === "GET" && route === "users") {
+        if (!requireUser(request).admin) fail(403, "Owner access is required.");
+        const search = (url.searchParams.get("q") || "").slice(0,100);
+        const page = Math.max(0, Math.min(100000, Number(url.searchParams.get("page")) || 0)) | 0;
+        const filter = "%" + search.replace(/[\\%_]/g, value => "\\" + value) + "%";
+        json(response, 200, { users: query("SELECT id,username,issuer,subject,role,disabled,created,last_login,(SELECT count(*) FROM sets WHERE owner_id=gallery_users.id) AS collections FROM gallery_users WHERE username LIKE ? ESCAPE '\\' ORDER BY created,id LIMIT 50 OFFSET ?", filter, page * 50), total: one("SELECT count(*) AS total FROM gallery_users WHERE username LIKE ? ESCAPE '\\'", filter).total, page }); return;
       }
       if (!["POST", "PATCH", "DELETE"].includes(method)) fail(405, "Method not allowed.");
       if (request.headers.origin !== origin || request.headers["sec-fetch-site"] === "cross-site") fail(403, "This action must come from the gallery website.");
@@ -221,47 +242,54 @@ export function createGalleryServer(options = {}) {
         if (action === "view") {
           run(`INSERT OR IGNORE INTO ${kind}_views VALUES (?, ?, ?)`, id, visitor, Math.floor(Date.now() / 86400000)); // Deduplicates opens per browser per UTC day, including concurrent requests.
         } else {
+          requireUser(request);
           const data = await readJson(request);
+          requireUser(request);
           if (typeof data.liked !== "boolean") fail(400, "Provide a true or false liked value.");
           if (!one(`SELECT id FROM ${collection} WHERE id=?`, id)) fail(404, "This collection or file no longer exists.");
-          if (data.liked) run(`INSERT OR IGNORE INTO ${kind}_likes VALUES (?, ?)`, id, visitor);
-          else run(`DELETE FROM ${kind}_likes WHERE target=? AND visitor=?`, id, visitor);
+          if (data.liked) run(`INSERT OR IGNORE INTO ${kind}_likes VALUES (?, ?)`, id, likeIdentity);
+          else run(`DELETE FROM ${kind}_likes WHERE target=? AND visitor=?`, id, likeIdentity);
         }
-        json(response, 200, engagement(kind, id, visitor)); return;
+        json(response, 200, engagement(kind, id, likeIdentity)); return;
       }
-      if (route !== "login" && !session?.authenticated) fail(401, "Please log in to manage the gallery.");
-      if (!session || request.headers["x-csrf-token"] !== session.csrf) fail(403, "Your session changed. Refresh the page and try again.");
-
-      if (route === "login" && method === "POST") {
-        const address = request.socket.remoteAddress || "unknown"; // Does not trust spoofable forwarded-address headers.
-        run("DELETE FROM attempts WHERE created<?", Date.now() - 900000);
-        if (one("SELECT count(*) AS total FROM attempts WHERE address=?", address).total >= 10 || one("SELECT count(*) AS total FROM attempts").total >= 100) fail(429, "Too many login attempts. Try again in 15 minutes.");
-        run("INSERT INTO attempts VALUES (?, ?)", address, Date.now());
-        const data = await readJson(request);
-        const username = textField(data.username, 100, true);
-        const password = typeof data.password === "string" && data.password.length <= 1024 ? data.password : "";
-        const owner = JSON.parse(readFileSync(adminPath, "utf8"));
-        const hash = await deriveKey(password, owner.salt, 64);
-        const valid = timingSafeEqual(hash, Buffer.from(owner.hash, "hex"));
-        if (!valid || username !== owner.username) fail(401, "Username or password is incorrect.");
-        run("DELETE FROM sessions WHERE id=?", session.id);
-        json(response, 200, newSession(response, true)); return;
-      }
+      requireUser(request);
+      if (request.headers["x-csrf-token"] !== session.csrf) fail(403, "Your session changed. Refresh the page and try again.");
       if (route === "logout" && method === "POST") {
-        run("DELETE FROM sessions WHERE id=?", session.id);
-        response.setHeader("Set-Cookie", `${cookieName}=; Path=/gallery/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? "; Secure" : ""}`);
+        identity.logout(request, response);
         json(response, 200, { ok: true }); return;
       }
+      const userMatch = /^users\/([a-f0-9-]{36})$/.exec(route);
+      if (userMatch && method === "PATCH") {
+        if (!requireUser(request).admin) fail(403, "Owner access is required.");
+        const data = await readJson(request);
+        const actor = requireUser(request);
+        if (!actor.admin) fail(403, "Owner access is required.");
+        const target = one("SELECT * FROM gallery_users WHERE id=?", userMatch[1]);
+        if (!target) fail(404, "User not found.");
+        if (target.role === "owner") fail(403, "The owner account cannot be disabled or demoted here.");
+        if (!['viewer','contributor'].includes(data.role) || typeof data.disabled !== 'boolean') fail(400, "Choose viewer or contributor and a valid account status.");
+        db.exec("BEGIN IMMEDIATE");
+        try {
+          run("UPDATE gallery_users SET role=?,disabled=? WHERE id=?", data.role, data.disabled ? 1 : 0, target.id);
+          if (data.disabled) run("DELETE FROM sessions WHERE user_id=?", target.id);
+          run("INSERT INTO user_audit(actor,target,action,created) VALUES (?,?,?,?)", actor.user_id, target.id, JSON.stringify({ role: data.role, disabled: data.disabled }), Date.now());
+          db.exec("COMMIT");
+        } catch(error) { db.exec("ROLLBACK"); throw error; }
+        json(response, 200, { ok: true }); return;
+      }
+      requireEditor(request);
       if (route === "sets" && method === "POST") {
         const data = await readJson(request);
+        const actor = requireEditor(request);
         const id = randomUUID();
-        run("INSERT INTO sets VALUES (?, ?, ?, NULL, ?)", id, textField(data.title, 120, true), textField(data.description ?? "", 2000), Date.now());
+        run("INSERT INTO sets(id,title,description,cover_id,created,owner_id) VALUES (?, ?, ?, NULL, ?, ?)", id, textField(data.title, 120, true), textField(data.description ?? "", 2000), Date.now(), actor.user_id);
         json(response, 201, { id }); return;
       }
       const setMatch = /^sets\/([a-f0-9-]{36})(\/items)?$/.exec(route);
       if (setMatch) {
         const set = one("SELECT * FROM sets WHERE id=?", setMatch[1]);
         if (!set) fail(404, "This collection no longer exists.");
+        requireEditor(request, set.id);
         if (setMatch[2] && method === "POST") {
           if (activeUploads >= 3) fail(429, "Please wait for another upload to finish.");
           const maxBytes = maxUploadMB * 1024 * 1024;
@@ -283,10 +311,11 @@ export function createGalleryServer(options = {}) {
               }
             } finally { await file.close(); }
             const [kind, extension] = detectMedia(signature);
-            if (!one("SELECT id FROM sessions WHERE id=? AND authenticated=1 AND expires>?", session.id, Date.now())) fail(401, "Your session ended before the upload finished. Please log in again.");
+            requireEditor(request, set.id);
             if (!one("SELECT id FROM sets WHERE id=?", set.id)) fail(409, "This collection was deleted during the upload.");
             finalName = `${id}${extension}`;
             await rename(temporary, path.join(dataDir, "uploads", finalName));
+            requireEditor(request, set.id); // Rechecks revocation after the asynchronous rename, before committing uploaded media.
             run("INSERT INTO items VALUES (?, ?, ?, ?, '', ?)", id, set.id, finalName, kind, Date.now());
             run("UPDATE sets SET cover_id=? WHERE id=? AND cover_id IS NULL", id, set.id);
             json(response, 201, { id });
@@ -299,6 +328,7 @@ export function createGalleryServer(options = {}) {
         }
         if (!setMatch[2] && method === "PATCH") {
           const data = await readJson(request);
+          requireEditor(request, set.id);
           let cover = set.cover_id;
           if (Object.hasOwn(data, "cover_id")) {
             if (typeof data.cover_id !== "string" || !one("SELECT id FROM items WHERE id=? AND set_id=?", data.cover_id, set.id)) fail(400, "Choose a cover from this collection.");
@@ -318,8 +348,10 @@ export function createGalleryServer(options = {}) {
       if (itemMatch) {
         const item = one("SELECT * FROM items WHERE id=?", itemMatch[1]);
         if (!item) fail(404, "This file no longer exists.");
+        requireEditor(request, item.set_id);
         if (method === "PATCH") {
           const data = await readJson(request);
+          requireEditor(request, item.set_id);
           run("UPDATE items SET caption=? WHERE id=?", textField(data.caption, 500), item.id);
           json(response, 200, { id: item.id }); return;
         }
@@ -337,7 +369,11 @@ export function createGalleryServer(options = {}) {
       fail(404, "Gallery endpoint not found.");
     } catch (error) {
       if (!error.status) console.error("Gallery request failed:", error.code || error.name);
-      if (!response.headersSent && !response.destroyed) json(response, error.status || 500, { error: error.status ? error.message : "The gallery could not complete that request. Please try again." });
+      if (!response.headersSent && !response.destroyed && request.url.startsWith('/gallery/auth/')) {
+        response.writeHead(error.status || 503, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        response.end('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LiDollID sign-in</title><link rel="stylesheet" href="/gallery/theme.css"><link rel="stylesheet" href="/gallery/style.css"><main class="gallery-shell"><h1>Sign-in could not be completed</h1><p>Your sign-in may have expired, access may be disabled, or LiDollID may be unavailable.</p><a class="action primary" href="/gallery/">Return to the gallery</a></main></html>');
+      }
+      else if (!response.headersSent && !response.destroyed) json(response, error.status || 500, { error: error.status ? error.message : "The gallery could not complete that request. Please try again." });
       else response.destroy();
     }
   });

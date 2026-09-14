@@ -2,7 +2,7 @@
 
 An independent photo/video gallery for **https://lidoll.dev/gallery/**, styled
 to match the main LiDOLL site. The owner can log in, manage collections, upload
-multiple files, edit captions, and choose covers. Saved content is public.
+multiple files, edit captions, and choose covers. Previews are public; originals require LiDollID sign-in.
 
 **Fedora deployment:** follow [FEDORA.md](FEDORA.md). The prepared layout is:
 
@@ -14,9 +14,9 @@ The service runs under systemd as `lidoll-gallery`, with root-owned application
 files in `/opt/lidoll-gallery` and private persistent data in
 `/var/lib/lidoll-gallery`. The Fedora installer creates the account, checks the
 existing Node version (24.9+), installs missing deployment dependencies and
-the app/unit, prompts for owner credentials on first use,
+the app/unit and pinned runtime packages,
 adds firewalld rules for the proxy, and starts/checks the service.
-Tests and owner setup run from `/opt/lidoll-gallery` as the service account,
+Tests run from `/opt/lidoll-gallery` as the service account,
 so the source checkout can remain inside a private home directory.
 
 On the Fedora backend, from an extracted release or this checkout, run:
@@ -55,27 +55,19 @@ at `web/gallery/theme.css`; nginx forwards every gallery asset/API/media request
 to this service. The main website only needs a link to `/gallery/`. Its existing
 game, TLS setup, and other routes remain independently deployed.
 
-The gallery's compatibility minimum is Node 24.9 with built-in SQLite. No npm dependencies are
-needed to run the gallery. Fedora uses the explicit `/usr/bin/node-24` binary.
-There is no default owner password or public registration. Run owner setup on
-the backend host; do not put a password in a config file or Git.
-
-The installer reuses `/usr/bin/node-24` when present and installs `nodejs24`
-only when that binary is missing. It does not request a Node upgrade or change
-the default `node` command. Node 24.9.0 passes the API suite; keep runtime security
-updates and Fedora maintenance on the host's normal maintenance schedule.
+The gallery requires Node 24.9+, the pinned runtime dependencies in package-lock.json (openid-client and sharp), and ffmpeg for video still previews. Fedora uses /usr/bin/node-24. Authentication is LiDollID authorization-code flow with PKCE S256; no gallery passwords or client secret are used.
 
 For local development with Node 24.9+:
 
 ```sh
-node server/gallery/setup.mjs
+npm ci
 node server/gallery/server.mjs
 ```
 
 Open `http://localhost:8787/gallery/`. Local storage defaults to the ignored
 `gallery-data/` folder. In production, configure the environment using the
 included `gallery.env.example`. A static-only host cannot process login/uploads.
-On Windows, `ps/start_gallery.ps1` also supports local or LAN startup.
+Register the exact local callback with a development identity issuer and set GALLERY_OIDC_ISSUER / GALLERY_OIDC_CLIENT_ID to use sign-in locally. On Windows, `ps/start_gallery.ps1` also supports local or LAN startup.
 
 ## Working with collections
 
@@ -94,56 +86,33 @@ keep their saved limit: set `GALLERY_MAX_UPLOAD_MB=1024` in
 `client_max_body_size 1024m;` before validating/reloading nginx. Refresh the
 gallery page to fetch the new limit. Alternatively, deploy with
 `--max-upload-mb 1024` and copy the installed nginx snippet to the proxy.
-Videos need browser-playable codecs; no transcoding is provided. MP4 and WebM
-cards and video collection covers show a still frame with a play overlay. The
-viewer uses the same frame as its poster before playback. Previews are created
-in the browser for both existing and new uploads, near the beginning of each
-video; no re-upload or server-side video tools are needed. Frames load as cards
-approach the viewport, with at most two decoders running and a 64-frame page
-cache. Preview requests do not count as views or start playback. If a browser
-cannot decode a video, or loading times out, the play overlay remains usable.
-Previews are regenerated after a page reload and are not saved on the server.
-Photos retain their original resolution and metadata, so
-upload versions suitable for public sharing. File-signature checks exclude
-HTML/SVG and unrecognized formats but do not fully decode or repair media.
-The gallery does not generate resized photo thumbnails or provide private drafts.
+Videos need browser-playable codecs for full playback. Public image previews are re-encoded as WebP, at most 480 by 480, with metadata stripped. Public video previews are single still frames generated with ffmpeg and resized by sharp. Existing uploads gain previews lazily; failed/unsupported decodes show a placeholder and never expose the original. Preview files live in the private data directory. These public previews can themselves be saved by visitors.
+
+## LiDollID accounts and permissions
+
+Sign-in and registration are available in the gallery. Register the public client **lidoll-gallery** with the exact callback **https://lidoll.dev/gallery/auth/callback** and token endpoint authentication method **none**. The default issuer is **https://auth.sadgirlsclub.wtf**. Full setup and the one-time **lidoll** owner migration are in [FEDORA.md](FEDORA.md#lidollid-registration-and-owner-migration).
+
+- Viewers can browse, like and download originals after signing in.
+- Contributors can create collections and upload, caption, change covers, or delete content in their own collections.
+- The owner can manage every collection and open **Users** to grant/revoke contributor permission or disable gallery access. Accounts appear after their first gallery login. Search and pagination support larger member lists. Disabling an account revokes gallery sessions; it does not disable the shared LiDollID account or delete content. The owner cannot be disabled/demoted from this panel.
+
+Original media, downloads, HEAD and byte-range requests require a current enabled account. They are served with private, no-store caching. The same upload restrictions apply to all contributors. Permission checks happen again before an upload commits, so revoking access during an upload takes effect. Owner migration uses the identity database's permanent subject, never a display-name match. Existing collections are retained and assigned to the owner.
 
 ## Views and likes
 
-Collections and individual photos/videos show public view and like totals.
-Opening a collection or its media viewer records one view per browser per UTC
-day. Browsing thumbnails, reloading the collection list, or seeking a video does
-not add views. Views count opens, including the owner's, rather than completed
-video plays or unique people. Collections and their media have separate totals.
+Public collection/media counts remain visible. Opening a collection or viewer counts one view per signed visitor cookie per UTC day, including signed-out visitors. Thumbnails, preview generation and video seeking do not add views.
 
-Visitors can like without an owner account. Each browser can have one like per
-collection or file; clicking again removes that like. Likes persist across page
-reloads, owner login/logout, and server restarts. A signed, HttpOnly first-party
-visitor cookie lasts one year and identifies the browser; no fingerprint or IP
-address is stored in reaction records. Clearing cookies, using another browser,
-or cookie expiry creates a new identity, so these are lightweight community
-counts, not fraud-proof analytics. Browsers blocking cookies can still browse,
-but cannot save reactions. An expired session asks the visitor to refresh.
-
-Counts and deduplication records are stored in SQLite, covered by its existing
-backup, and removed when their collection/file is deleted. Existing installations
-gain the new tables automatically at startup, with existing content starting at
-zero. Owner-password resets do not reset reactions or visitor identities.
+Likes require LiDollID and are unique per account and target across browsers. Clicking again removes the account's like. Historic anonymous likes remain in totals without being reassigned to an account. The visitor cookie is still used for view deduplication, not account permissions. Reaction writes require same-origin and CSRF checks.
 
 ## Authentication and persistence
 
-Content edits require an owner-authenticated session, exact origin and CSRF checks.
-Public view/like writes require an anonymous session, a signed visitor cookie,
-and the same origin/CSRF checks, without granting content-management permissions.
-Production cookies are Secure, HttpOnly, and SameSite=Strict. Passwords use salted
-scrypt hashes. Sessions last 12 hours and rotate at login; logout and password
-reset revoke sessions. Login attempts are limited to 10 per 15 minutes per direct
-peer plus a global cap. With this proxy layout, the proxy is the direct peer and
-the limit is shared; forwarded client-IP headers are not trusted.
+The OIDC client verifies the signed ID token, issuer, audience, state, nonce, PKCE and matching userinfo subject. Login attempts expire after ten minutes and are single use; application sessions expire after one hour and rotate at sign-in. Cookies are HttpOnly and Secure on HTTPS. Login/session cookies use SameSite=Lax for the identity-provider callback; visitor cookies use Strict. Gallery logout ends the gallery session; shared LiDollID sign-in may remain active. Disabling the identity centrally prevents future sign-ins; an existing gallery session lasts up to one hour unless revoked in Users.
+
+Automatic schema migration retains uploaded content and existing view/like totals, and revokes legacy password sessions. The old admin.json is no longer used to authenticate. Permission changes and owner binding are audited in the gallery database. No science or wallet database is accessed.
 
 Back up the entire persistent data directory with the service stopped, or use
-a consistent volume snapshot. This includes `admin.json`, `gallery.sqlite` and
-any WAL/SHM files, plus `uploads/`. Do not copy only the live SQLite file. Restore
+a consistent volume snapshot. This includes `gallery.sqlite` and
+any WAL/SHM files, plus `uploads/` and `previews/`. Legacy `admin.json` can be retained in backups but is no longer a credential. Do not copy only the live SQLite file. Restore
 while stopped and preserve service-account ownership and private permissions.
 Application updates do not replace this directory.
 

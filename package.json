@@ -3,7 +3,9 @@
   "version": "1.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24.9.0" },
+  "engines": {
+    "node": ">=24.9.0"
+  },
   "scripts": {
     "setup": "node server/gallery/setup.mjs",
     "start": "node server/gallery/server.mjs",
@@ -11,5 +13,11 @@
     "test:browser": "node server/gallery/browser.test.mjs",
     "package:fedora": "python3 python/package_release.py"
   },
-  "devDependencies": { "puppeteer": "24.43.1" }
+  "devDependencies": {
+    "puppeteer": "24.43.1"
+  },
+  "dependencies": {
+    "openid-client": "^6.8.4",
+    "sharp": "^0.35.4"
+  }
 }
